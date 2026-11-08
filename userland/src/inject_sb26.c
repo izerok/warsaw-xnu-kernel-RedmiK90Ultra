@@ -870,8 +870,10 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         xpc_connection_send_message_with_reply(connection, message,
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
             ^(xpc_object_t rep) {
+                /* The sync API also hands back XPC_TYPE_ERROR dicts on a dead peer;
+                 * only a real dictionary is useful, so keep just that. The array
+                 * "key" must stay out of the block (clang rejects capturing one). */
                 if (rep && xpc_get_type(rep) == XPC_TYPE_DICTIONARY) {
-                    sb26_xpc_cache_put(key, rep);
                     async_reply = xpc_retain(rep);
                 }
                 dispatch_semaphore_signal(done);
@@ -879,6 +881,7 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         if (dispatch_semaphore_wait(done,
                 dispatch_time(DISPATCH_TIME_NOW, 4LL * NSEC_PER_SEC)) == 0) {
             reply = async_reply;
+            sb26_xpc_cache_put(key, reply);
         } else {
             /* NSXPCConnection requires a dictionary: NULL aborts SpringBoard with
              * "root object is not an XPC dictionary" (v66). Replay a real reply of
