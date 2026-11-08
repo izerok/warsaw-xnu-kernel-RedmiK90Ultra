@@ -759,7 +759,12 @@ sb26_install_crash_logger(void)
  * iconservicesagent process dies (EXC_CORPSE_NOTIFY, pid 60/84/86/93/99/105, no stderr
  * output, always mid-Metal-shim) with SpringBoard's sync request already on the wire,
  * which strands the waiting thread forever; enough strands take down the main thread.
- * v65 dumps every iconservices message to see what the agent last received.
+ * v65 dumped every iconservices message (ISGenerationRequest, replysig
+ * "v16@?0@\"ISGenerationResponse\"8") and installed a fatal-signal backtrace logger;
+ * on the phone the logger stayed silent, so the agent dies through a path a signal
+ * handler cannot see (SIGKILL or a direct mach exception). v66 therefore bounds the
+ * iconservices wait to 4 s through the async reply API, so a dead agent can no longer
+ * strand SpringBoard's thread.
  * --------------------------------------------------------------------------------------- */
 static atomic_uint sb26_xpc_sync_n;
 static _Thread_local unsigned sb26_xpc_depth;
@@ -789,9 +794,39 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         return NULL;
     }
 
-    sb26_xpc_depth++;
-    reply = xpc_connection_send_message_with_reply_sync(connection, message);
-    sb26_xpc_depth--;
+    /* v66: the agent dies right after receiving an ISGeneration request and its
+     * death strands every in-flight xpc_connection_send_message_with_reply_sync
+     * FOREVER (the tap-an-icon freeze). The original call has no timeout, so for
+     * iconservices only, the same reply is awaited through the async API under a
+     * dispatch semaphore with a 4 s cap; on timeout a NULL reply is returned, the
+     * same shape as a peer that answered with nothing. Every other service keeps
+     * the plain synchronous call. */
+    if (is_icons) {
+        __block xpc_object_t async_reply = NULL;
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        xpc_connection_send_message_with_reply(connection, message,
+            dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+            ^(xpc_object_t rep) {
+                /* The sync API also hands back XPC_TYPE_ERROR dicts, so errors are
+                 * passed through unchanged; only the 4 s timeout yields NULL. */
+                if (rep) {
+                    async_reply = xpc_retain(rep);
+                }
+                dispatch_semaphore_signal(done);
+            });
+        if (dispatch_semaphore_wait(done,
+                dispatch_time(DISPATCH_TIME_NOW, 4LL * NSEC_PER_SEC)) == 0) {
+            reply = async_reply;
+        } else {
+            reply = NULL;
+            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s (agent dead?)\n", n, name);
+        }
+        if (done) dispatch_release(done);
+    } else {
+        sb26_xpc_depth++;
+        reply = xpc_connection_send_message_with_reply_sync(connection, message);
+        sb26_xpc_depth--;
+    }
 
     fprintf(stderr, "sb26 xpc sync #%u <- name=%s reply=%p\n", n, name ? name : "-", reply);
     return reply;
