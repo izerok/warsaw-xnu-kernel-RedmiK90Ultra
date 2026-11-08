@@ -25,6 +25,8 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <mach-o/dyld.h>
+#include <xpc/xpc.h>
+#include <dlfcn.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -694,12 +696,98 @@ sb26_ensure_chinese_preferences(void)
     CFRelease(dict);
 }
 
+
+/* ---------------------------------------------------------------------------------------
+ * v63: SpringBoard's main thread freezes on an icon tap inside
+ *   mach_msg2_trap -> dispatch_mach_send_with_result_and_wait_for_reply ->
+ *   xpc_connection_send_message_with_reply_sync
+ * and never returns. The kernel freeze detector shows the same stack from t=94 to t=1991.
+ * Nothing in the kernel log names the peer, so interpose the synchronous XPC entry point and
+ * print the connection's name BEFORE the call (after it, the log would never be produced).
+ *
+ * com.redwood.xpcguard, observed on a global queue so it still works once the main queue is
+ * stuck, switches in a bounded async reply path (2 s). That is a rescue switch, off by default,
+ * so v63's normal boot is behaviourally identical to v62's.
+ * --------------------------------------------------------------------------------------- */
+typedef struct { double x, y; } sb26_pt;
+
+static atomic_int  sb26_xpc_guard;
+static atomic_uint sb26_xpc_sync_n;
+
+typedef xpc_object_t (*sb26_xpc_sync_fn)(xpc_connection_t, xpc_object_t);
+
+static sb26_xpc_sync_fn   sb26_xpc_sync_real;
+
+static xpc_object_t
+sb26_xpc_async_bounded(xpc_connection_t connection, xpc_object_t message,
+                       unsigned n, const char *name)
+{
+    __block xpc_object_t reply = NULL;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
+    if (!sem || !q) return NULL;
+
+    xpc_connection_send_message_with_reply(connection, message, q, ^(xpc_object_t r) {
+        if (r) reply = xpc_retain(r);
+        dispatch_semaphore_signal(sem);
+    });
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
+        fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s\n", n, name ? name : "-");
+        return NULL;
+    }
+    fprintf(stderr, "sb26 xpc sync #%u async reply=%p name=%s\n", n, reply, name ? name : "-");
+    return reply;               /* +1, matching the synchronous API's ownership */
+}
+
+static xpc_object_t
+sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
+{
+    const char *name = connection ? xpc_connection_get_name(connection) : NULL;
+    unsigned n = atomic_fetch_add(&sb26_xpc_sync_n, 1) + 1;
+
+    if (n <= 160) {
+        char *desc = message ? xpc_copy_description(message) : NULL;
+        fprintf(stderr, "sb26 xpc sync #%u -> conn=%p name=%s guard=%d msg=%.190s\n",
+            n, connection, name ? name : "(anonymous)", atomic_load(&sb26_xpc_guard),
+            desc ? desc : "-");
+        if (desc) free(desc);
+    }
+
+    if (!sb26_xpc_sync_real)
+        sb26_xpc_sync_real = (sb26_xpc_sync_fn)dlsym(RTLD_NEXT,
+            "xpc_connection_send_message_with_reply_sync");
+
+    /* A NULL or self-referential resolution would crash / recurse forever. */
+    if (!sb26_xpc_sync_real || sb26_xpc_sync_real == (sb26_xpc_sync_fn)sb26_hook_xpc_sync)
+        return sb26_xpc_async_bounded(connection, message, n, name);
+
+    if (atomic_load(&sb26_xpc_guard))
+        return sb26_xpc_async_bounded(connection, message, n, name);
+
+    return sb26_xpc_sync_real(connection, message);
+}
+
+static void
+sb26_install_xpc_guard_notify(void)
+{
+    int token;
+    notify_register_dispatch("com.redwood.xpcguard", &token,
+        dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^(int t) {
+            (void)t;
+            int on = !atomic_load(&sb26_xpc_guard);
+            atomic_store(&sb26_xpc_guard, on);
+            fprintf(stderr, "sb26: xpc guard %s after %u sync calls\n",
+                on ? "ON (2s bounded reply)" : "OFF", atomic_load(&sb26_xpc_sync_n));
+        });
+}
+
 __attribute__((used, section("__DATA,__interpose"))) static const struct {
     const void *replacement;
     const void *original;
 } sb26_interposers[] = {
     { (const void *)sb26_hook_MGCopyAnswer, (const void *)MGCopyAnswer },
     { (const void *)sb26_hook_CFBundleCopyBundleLocalizations, (const void *)CFBundleCopyBundleLocalizations },
+    { (const void *)sb26_hook_xpc_sync, (const void *)xpc_connection_send_message_with_reply_sync },
 };
 
 #include "inject_sb26_airdrop.inc"
@@ -897,8 +985,13 @@ sb26_fill_one_icon(id view)
     if (sb26_icons_seen <= 24) {
         id bid = sb26_ask(icon, "applicationBundleID");
         const char *bundle = sb26_utf8(bid);
-        fprintf(stderr, "sb26 iconmap: #%u root=%s bid=%s\n",
-            sb26_icons_seen, root, bundle ? bundle : "-");
+        sb26_pt pos = { -1, -1 };
+        if (class_respondsToSelector(object_getClass(layer), sel_registerName("position"))) {
+            sb26_pt (*at)(id, SEL) = (sb26_pt (*)(id, SEL))objc_msgSend;
+            pos = at(layer, sel_registerName("position"));
+        }
+        fprintf(stderr, "sb26 iconmap: #%u root=%s bid=%s pos=%.0f,%.0f\n",
+            sb26_icons_seen, root, bundle ? bundle : "-", pos.x, pos.y);
     }
 
     /* v59/v60 only asked "is contents non-nil?", so a recycled view kept its old artwork under
@@ -1155,6 +1248,7 @@ install_sb26(void)
     }
     sb26_install_layer_dump();
     sb26_install_icon_refresh_notify();
+    sb26_install_xpc_guard_notify();
     sb26_install_rate(slide);
     install_powerdown_hooks();
 
