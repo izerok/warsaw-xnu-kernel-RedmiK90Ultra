@@ -2493,10 +2493,11 @@ struct gem_close { uint32_t handle, pad; };
 		       options:(NSUInteger)options
 		   deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	/* Only the small buffers for now: roundb's 109 deduplicated copy requests all fell at or under
-	 * this limit, 94 of them at 32 KiB, so a copy of that size says whether the nil return is what
-	 * stops the compositor without paying for a 1 MiB copy on every one of the others. */
-	enum { NOCOPY_LIMIT = 0x10000 };
+	/* 16 MiB covers what the window server composites: a full-screen BGRA image is 11 MB.
+	 * The 64 KiB this used to be left every iconservicesagent icon buffer (147456 .. 327680
+	 * bytes in the v54b log) answered nil, which is why the home screen had icon labels and
+	 * no icon artwork.  The same fix is in the upstream split driver's copy of this method. */
+	enum { NOCOPY_LIMIT = 16 << 20 };
 
 	(void)options;
 	if (bytes == NULL || length == 0 || length > NOCOPY_LIMIT) {
