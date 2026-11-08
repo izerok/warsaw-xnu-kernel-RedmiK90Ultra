@@ -173,7 +173,6 @@ lock_screen_manager(void)
 }
 
 /* 1: locked, an unlock was asked for; 0: not locked; -1: no lock screen manager to ask. */
-static void sb26_schedule_stepped_refresh(void);
 
 static int
 unlock_once(const char *why)
@@ -196,133 +195,16 @@ unlock_once(const char *why)
     fprintf(stderr, "sb26: unlock %s: answer=%d locked_after=%d\n", why, answer, locked_after);
     if (!locked_after) {
         notify_post("com.redwood.wallpaper.suspend");
-        sb26_schedule_stepped_refresh();
     }
     return 1;
 }
 
 static int boot_unlock_seen_locked;
 
-static void
-refresh_view_recursive(id view, int depth)
-{
-    if (!view || depth > 8) return;
-
-    SEL layout_sel = sel_registerName("setNeedsLayout");
-    SEL update_img_anim = sel_registerName("updateImageAnimated:");
-    SEL update_icon_img_anim = sel_registerName("updateIconImageViewAnimated:");
-    SEL update_img = sel_registerName("updateImage");
-    SEL subviews_sel = sel_registerName("subviews");
-    SEL count_sel = sel_registerName("count");
-    SEL obj_at_idx = sel_registerName("objectAtIndex:");
-
-    Class view_cls = object_getClass(view);
-    const char *cls_name = class_getName(view_cls);
-
-    if (cls_name && (strstr(cls_name, "Icon") != NULL)) {
-        if (class_respondsToSelector(view_cls, update_img_anim)) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(view, update_img_anim, NO);
-        } else if (class_respondsToSelector(view_cls, update_icon_img_anim)) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(view, update_icon_img_anim, NO);
-        } else if (class_respondsToSelector(view_cls, update_img)) {
-            ((void (*)(id, SEL))objc_msgSend)(view, update_img);
-        }
-        if (class_respondsToSelector(view_cls, layout_sel)) {
-            ((void (*)(id, SEL))objc_msgSend)(view, layout_sel);
-        }
-    }
-
-    if (class_respondsToSelector(view_cls, subviews_sel)) {
-        id subviews = ((id (*)(id, SEL))objc_msgSend)(view, subviews_sel);
-        if (subviews && class_respondsToSelector(object_getClass(subviews), count_sel)) {
-            unsigned long count = ((unsigned long (*)(id, SEL))objc_msgSend)(subviews, count_sel);
-            for (unsigned long i = 0; i < count; i++) {
-                id child = ((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews, obj_at_idx, i);
-                refresh_view_recursive(child, depth + 1);
-            }
-        }
-    }
-}
-
-static void
-refresh_windows_array(id windows_array)
-{
-    if (!windows_array) return;
-    SEL count_sel = sel_registerName("count");
-    SEL obj_at_idx = sel_registerName("objectAtIndex:");
-    if (!class_respondsToSelector(object_getClass(windows_array), count_sel) ||
-        !class_respondsToSelector(object_getClass(windows_array), obj_at_idx)) {
-        return;
-    }
-    unsigned long win_count = ((unsigned long (*)(id, SEL))objc_msgSend)(windows_array, count_sel);
-    for (unsigned long i = 0; i < win_count; i++) {
-        id window = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows_array, obj_at_idx, i);
-        if (window) {
-            refresh_view_recursive(window, 0);
-        }
-    }
-}
-
-static void
-sb26_stepped_refresh_step(void *context)
-{
-    uintptr_t step_idx = (uintptr_t)context;
-    fprintf(stderr, "sb26: stepped icon refresh step %lu executing on main thread\n", (unsigned long)step_idx);
-
-    Class app_class = objc_getClass("UIApplication");
-    Class window_class = objc_getClass("UIWindow");
-    Class catrans_class = objc_getClass("CATransaction");
-
-    /* Only refresh VISIBLE windows and do NOT recurse into hidden internal touch windows */
-    SEL all_win_sel = sel_registerName("allWindowsIncludingInternalWindows:onlyVisibleWindows:");
-    if (window_class && class_respondsToSelector(object_getClass((id)window_class), all_win_sel)) {
-        id visible_windows = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)((id)window_class, all_win_sel, NO, YES);
-        refresh_windows_array(visible_windows);
-    } else if (app_class) {
-        SEL shared_sel = sel_registerName("sharedApplication");
-        if (class_respondsToSelector(object_getClass((id)app_class), shared_sel)) {
-            id app = ((id (*)(id, SEL))objc_msgSend)((id)app_class, shared_sel);
-            if (app) {
-                SEL win_sel = sel_registerName("windows");
-                if (class_respondsToSelector(object_getClass(app), win_sel)) {
-                    id app_windows = ((id (*)(id, SEL))objc_msgSend)(app, win_sel);
-                    refresh_windows_array(app_windows);
-                }
-            }
-        }
-    }
-
-    if (catrans_class) {
-        SEL commit_sel = sel_registerName("commit");
-        if (class_respondsToSelector(object_getClass((id)catrans_class), commit_sel)) {
-            ((void (*)(id, SEL))objc_msgSend)((id)catrans_class, commit_sel);
-        }
-    }
-
-    fprintf(stderr, "sb26: stepped icon refresh step %lu completed\n", (unsigned long)step_idx);
-}
-
-static void
-sb26_schedule_stepped_refresh(void)
-{
-    static int scheduled = 0;
-    if (scheduled) return;
-    scheduled = 1;
-
-    static const int delays[] = { 3, 6, 10, 15, 22, 30, 45 };
-    const size_t num_delays = sizeof(delays) / sizeof(delays[0]);
-
-    fprintf(stderr, "sb26: scheduling stepped icon refresh after unlock (%zu steps: +3s..+45s)\n", num_delays);
-
-    for (size_t i = 0; i < num_delays; i++) {
-        dispatch_after_f(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)delays[i] * NSEC_PER_SEC),
-            dispatch_get_main_queue(),
-            (void *)(uintptr_t)(i + 1),
-            sb26_stepped_refresh_step
-        );
-    }
-}
+/* v62: the stepped "updateImageAnimated:/setNeedsLayout" refresh chain is gone. It was
+ * added for the v50 icon-black problem, which the app-bundle PNG fallback now solves, and
+ * it re-laid out every visible window 16 times in the first 150 s -- exactly the period the
+ * user reports as "cannot swipe at first, then later it scrolls fine". */
 
 static void
 boot_unlock(void *context)
@@ -333,7 +215,6 @@ boot_unlock(void *context)
     if (state == 0 && boot_unlock_seen_locked) {
         fprintf(stderr, "sb26: boot unlock done after %lu attempts\n", (unsigned long)attempt);
         notify_post("com.redwood.wallpaper.suspend");
-        sb26_schedule_stepped_refresh();
         return;
     }
     if (attempt >= UNLOCK_ATTEMPTS) {
@@ -353,7 +234,6 @@ sb26_hook_unlock_ui(id self, SEL cmd, long source, id options)
     SEL locked = sel_registerName("isUILocked");
     if (!((BOOL (*)(id, SEL))objc_msgSend)(self, locked)) {
         notify_post("com.redwood.wallpaper.suspend");
-        sb26_schedule_stepped_refresh();
     }
     return ans;
 }
@@ -379,7 +259,6 @@ install_unlock(void)
         if (unlock_once("notification") == 0) {
             fprintf(stderr, "sb26: unlock notification: not locked\n");
             notify_post("com.redwood.wallpaper.suspend");
-            sb26_schedule_stepped_refresh();
         }
     });
 
@@ -1012,6 +891,16 @@ sb26_fill_one_icon(id view)
     }
     if (!root) { sb26_icons_no_path++; return; }
 
+    /* The labels and the artwork still disagree after v61 bound a bundle path to each view.
+     * Print the traversal order together with what the view says its icon is, so a mismatch
+     * between the view's model and the label can be told from a wrong PNG. */
+    if (sb26_icons_seen <= 24) {
+        id bid = sb26_ask(icon, "applicationBundleID");
+        const char *bundle = sb26_utf8(bid);
+        fprintf(stderr, "sb26 iconmap: #%u root=%s bid=%s\n",
+            sb26_icons_seen, root, bundle ? bundle : "-");
+    }
+
     /* v59/v60 only asked "is contents non-nil?", so a recycled view kept its old artwork under
      * the new label. Compare the bundle path the cached picture came from with the view's CURRENT
      * icon. Even when they match, re-assert our CGImage: -updateImage: can replace layer.contents
@@ -1178,7 +1067,6 @@ sb26_icon_late_step(void *context)
 {
     uintptr_t at = (uintptr_t)context;
     sb26_install_all_icon_layer_fallbacks();
-    sb26_stepped_refresh_step((void *)(uintptr_t)100);
     sb26_fill_all_icons();
     sb26_fill_wallpaper();
     fprintf(stderr,
@@ -1188,6 +1076,20 @@ sb26_icon_late_step(void *context)
         sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
         sb26_icon_fallback_calls, sb26_icon_fallback_wrapped,
         sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg, sb26_wall_layers);
+}
+
+/* Host-side "oem sh notify com.redwood.icons" re-runs the icon fill at any time, so a
+ * relayout/scroll can be checked without waiting for the next scheduled pass. */
+static void
+sb26_install_icon_refresh_notify(void)
+{
+    int token;
+    notify_register_dispatch("com.redwood.icons", &token, dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        sb26_fill_all_icons();
+        fprintf(stderr, "sb26: icon refresh notify: filled=%u refilled=%u seen=%u\n",
+            sb26_icons_filled, sb26_icons_refreshed, sb26_icons_seen);
+    });
 }
 
 static void
@@ -1252,6 +1154,7 @@ install_sb26(void)
                 dispatch_get_main_queue(), (void *)(uintptr_t)icon_delays[i], sb26_icon_late_step);
     }
     sb26_install_layer_dump();
+    sb26_install_icon_refresh_notify();
     sb26_install_rate(slide);
     install_powerdown_hooks();
 

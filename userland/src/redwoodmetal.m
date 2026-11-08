@@ -1784,12 +1784,10 @@ struct gem_close { uint32_t handle, pad; };
 	return nil;
 }
 
-/* -newTextureWithBytesNoCopy:length:descriptor:deallocator: now lives in the
- * TextureLayout category at the end of this file. The old nil stub made QuartzCore
- * build a zero-length CompressedImage for the switcher ATX snapshot; SpringBoard
- * exited on an icon tap right after "newTextureLayoutWithDescriptor returns nil".
- * The category copies the layout memory once with -replaceRegion:, which this
- * driver does implement (redwoodmetal_texture.inc).
+/* -newTextureWithBytesNoCopy:length:descriptor:deallocator: lives in the TextureLayout
+ * category at the end of this file. v61 made it copy the CompressedImage memory into a
+ * real texture and SpringBoard's main thread hung on an icon tap; v62 refuses the
+ * texture while keeping the layout non-nil, which is what stopped v60's crash.
  *
  * A texture over memory the CALLER allocated is still answered by name rather than
  * left unrecognized, because an unrecognized selector is terminate().

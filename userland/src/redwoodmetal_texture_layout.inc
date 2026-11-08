@@ -222,56 +222,23 @@ rw_texture_layout_new(MTLTextureDescriptor *d)
 	return layout;
 }
 
-/*
- * A texture over memory in the layout above. The texture is made by copying the memory once, which
- * is right for what reaches here, CompressedImage data that nobody writes after it is sent. A
- * texture the GPU may write, or memory smaller than the layout, is refused: a copy would not follow
- * the caller's later writes. A length of 0 is taken as the whole layout: hakios-arm64e-dada notes
- * that RenderBox passes 0 for its ASTC images.
+/* v62: v61 copied the CompressedImage memory into a real texture here, and SpringBoard's
+ * main thread then hung forever on the icon-tap transition: all 32 of its threads in wait,
+ * the main queue no longer answering notifications, frame submissions stopped (only the
+ * tl: cnt heartbeat kept coming), while the kernel and rwsh stayed alive. v60 crashed on a
+ * nil layout; v61 hung on a real texture. Keep the layout non-nil and refuse the texture:
+ * QuartzCore drops this one window's commit instead of blocking the whole shell.
  */
 - (id)newTextureWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
 		     descriptor:(MTLTextureDescriptor *)descriptor
 		    deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	RedwoodTextureLayout *layout = rw_texture_layout_new(descriptor);
-	NSUInteger usage = [descriptor usage];
-	id texture = nil;
-
-	if (bytes == NULL || layout == nil || (usage & (MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget)) ||
-	    (length != 0 && length < layout->_size)) {
-		RW_AGAIN("newTextureWithBytesNoCopy: refused: format %lu %lux%lu usage %#lx, %lu bytes for a layout of %lu\n",
-			 (unsigned long)[descriptor pixelFormat], (unsigned long)[descriptor width],
-			 (unsigned long)[descriptor height], (unsigned long)usage, (unsigned long)length,
-			 (unsigned long)(layout ? layout->_size : 0));
-		[layout release];
-		return nil;
-	}
-	texture = [self newTextureWithDescriptor:descriptor];
-	for (NSUInteger slice = 0; texture != nil && slice < layout->_slices; slice++) {
-		for (NSUInteger level = 0; level < layout->_levels; level++) {
-			MTLRegion region = MTLRegionMake3D(0, 0, 0, rw_layout_extent(layout->_width, level),
-							   rw_layout_extent(layout->_height, level),
-							   rw_layout_extent(layout->_depth, level));
-
-			[texture replaceRegion:region mipmapLevel:level slice:slice
-				     withBytes:(const uint8_t *)bytes + rw_layout_offset(layout, slice, level)
-				   bytesPerRow:rw_layout_row_bytes(layout, level)
-				 bytesPerImage:rw_layout_image_bytes(layout, level)];
-		}
-	}
-	if (texture != nil && deallocator != nil) {
-		static char owner_key;
-		NSData *owner = [[NSData alloc] initWithBytesNoCopy:bytes length:length ? length : layout->_size
-							deallocator:deallocator];
-
-		objc_setAssociatedObject(texture, &owner_key, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-		[owner release];
-	}
-	RW_ONCE("redwoodmetal: first texture over caller memory: format %lu %lux%lu, %lu levels, %lu bytes\n",
-		(unsigned long)[descriptor pixelFormat], (unsigned long)[descriptor width],
-		(unsigned long)[descriptor height], (unsigned long)layout->_levels, (unsigned long)layout->_size);
-	[layout release];
-	return texture;
+	(void)bytes;
+	(void)length;
+	(void)descriptor;
+	(void)deallocator;
+	RW_AGAIN("newTextureWithBytesNoCopy: refused (v62: a real texture hung SpringBoard)\n");
+	return nil;
 }
 
 @end
