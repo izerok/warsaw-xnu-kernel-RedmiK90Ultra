@@ -1068,7 +1068,39 @@ sb26_fill_all_icons(void)
  * _SBWallpaperSecureWindow whose UIWindowLayer has bg=000000ff and contents=none. Paint the PNG
  * that tools/mkwallpaper.py put on the small root disk into that window's layer. Same fallback
  * idea as the icons: set the contents ourselves instead of waiting for the poster pipeline. */
-static unsigned sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg;
+static unsigned sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg,
+                sb26_wall_layers;
+
+/* v59 set the PNG on the window layer only: the layer dump then showed
+ *   layer 0 UIWindowLayer ... contents=CGImage 1280x2772
+ *   layer 1 CALayer view=UIView ... bg=000000ff masks=1 contents=none
+ * i.e. an opaque black full-screen child covered the image completely. Walk the wallpaper
+ * window's view tree and give every empty layer the same image. CoverSheet's dimming and
+ * dest-out overlays are left alone (they have their own compositing filters). */
+static void
+sb26_fill_wall_subviews(id view, id cg, int depth)
+{
+    const char *cls = view ? class_getName(object_getClass(view)) : NULL;
+    id subviews, layer;
+    unsigned long count, i;
+
+    if (!view || depth > 6 || (cls && strstr(cls, "CoverSheet"))) return;
+    layer = sb26_ask(view, "layer");
+    if (layer && !sb26_ask(layer, "contents")) {
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"),
+            (id)CFSTR("resizeAspectFill"));
+        sb26_wall_layers++;
+    }
+    subviews = sb26_ask(view, "subviews");
+    if (!subviews) return;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(subviews, sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id child = ((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews,
+            sel_registerName("objectAtIndex:"), i);
+        sb26_fill_wall_subviews(child, cg, depth + 1);
+    }
+}
 
 static void
 sb26_fill_wallpaper(void)
@@ -1090,18 +1122,15 @@ sb26_fill_wallpaper(void)
         id w = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows,
             sel_registerName("objectAtIndex:"), i);
         const char *cls = w ? class_getName(object_getClass(w)) : NULL;
-        id layer;
+        unsigned before;
         if (!cls || !strstr(cls, "Wallpaper")) continue;
         sb26_wall_seen++;
-        layer = sb26_ask(w, "layer");
-        if (!layer) continue;
-        if (sb26_ask(layer, "contents")) { sb26_wall_had++; continue; }
         if (!cg) cg = sb26_cgimage_at("/redwood/share/wallpaper.png");
         if (!cg) { sb26_wall_noimg++; continue; }
-        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
-        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"),
-            (id)CFSTR("resizeAspectFill"));
-        sb26_wall_filled++;
+        before = sb26_wall_layers;
+        sb26_fill_wall_subviews(w, cg, 0);
+        if (sb26_wall_layers > before) sb26_wall_filled++;
+        else sb26_wall_had++;
     }
 }
 
@@ -1117,11 +1146,11 @@ sb26_icon_late_step(void *context)
     sb26_fill_wallpaper();
     fprintf(stderr,
         "sb26: icons +%lus: filled=%u seen=%u had=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u"
-        " | wall seen=%u filled=%u had=%u noimg=%u\n",
+        " | wall seen=%u filled=%u had=%u noimg=%u layers=%u\n",
         (unsigned long)at, sb26_icons_filled, sb26_icons_seen, sb26_icons_had_contents,
         sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
         sb26_icon_fallback_calls, sb26_icon_fallback_wrapped,
-        sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg);
+        sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg, sb26_wall_layers);
 }
 
 static void
