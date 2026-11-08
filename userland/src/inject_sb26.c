@@ -1064,6 +1064,47 @@ sb26_fill_all_icons(void)
     }
 }
 
+/* PosterBoard / MercuryPosterExtension never starts on this port: the wallpaper window is a
+ * _SBWallpaperSecureWindow whose UIWindowLayer has bg=000000ff and contents=none. Paint the PNG
+ * that tools/mkwallpaper.py put on the small root disk into that window's layer. Same fallback
+ * idea as the icons: set the contents ourselves instead of waiting for the poster pipeline. */
+static unsigned sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg;
+
+static void
+sb26_fill_wallpaper(void)
+{
+    Class wc = objc_getClass("UIWindow");
+    SEL all = sel_registerName("allWindowsIncludingInternalWindows:onlyVisibleWindows:");
+    id windows = nil, app, cg = nil;
+    unsigned long count, i;
+
+    if (wc && class_respondsToSelector(object_getClass((id)wc), all))
+        windows = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)((id)wc, all, YES, YES);
+    if (!windows) {
+        app = sb26_ask((id)objc_getClass("UIApplication"), "sharedApplication");
+        windows = sb26_ask(app, "windows");
+    }
+    if (!windows) return;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(windows, sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id w = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows,
+            sel_registerName("objectAtIndex:"), i);
+        const char *cls = w ? class_getName(object_getClass(w)) : NULL;
+        id layer;
+        if (!cls || !strstr(cls, "Wallpaper")) continue;
+        sb26_wall_seen++;
+        layer = sb26_ask(w, "layer");
+        if (!layer) continue;
+        if (sb26_ask(layer, "contents")) { sb26_wall_had++; continue; }
+        if (!cg) cg = sb26_cgimage_at("/redwood/share/wallpaper.png");
+        if (!cg) { sb26_wall_noimg++; continue; }
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"),
+            (id)CFSTR("resizeAspectFill"));
+        sb26_wall_filled++;
+    }
+}
+
 /* Icon provider classes are loaded lazily. Re-scan a few times during the first minute,
  * then ask SpringBoard to rebuild the icon views so the newly hooked providers are used. */
 static void
@@ -1073,11 +1114,14 @@ sb26_icon_late_step(void *context)
     sb26_install_all_icon_layer_fallbacks();
     sb26_stepped_refresh_step((void *)(uintptr_t)100);
     sb26_fill_all_icons();
+    sb26_fill_wallpaper();
     fprintf(stderr,
-        "sb26: icons +%lus: filled=%u seen=%u had=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u\n",
+        "sb26: icons +%lus: filled=%u seen=%u had=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u"
+        " | wall seen=%u filled=%u had=%u noimg=%u\n",
         (unsigned long)at, sb26_icons_filled, sb26_icons_seen, sb26_icons_had_contents,
         sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
-        sb26_icon_fallback_calls, sb26_icon_fallback_wrapped);
+        sb26_icon_fallback_calls, sb26_icon_fallback_wrapped,
+        sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg);
 }
 
 static void
