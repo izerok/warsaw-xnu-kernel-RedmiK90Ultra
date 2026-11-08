@@ -874,9 +874,13 @@ install_powerdown_hooks(void)
  * PNG and set it on the view's own layer. Every access is guarded, and the
  * object graph is printed once so a failed lookup tells us what 23G90 answers.
  */
-static unsigned sb26_icons_seen, sb26_icons_filled, sb26_icons_had_contents,
+static unsigned sb26_icons_seen, sb26_icons_filled, sb26_icons_refreshed,
                 sb26_icons_no_path, sb26_icons_no_image;
 static int sb26_icon_diag_done;
+/* SBIconImageView objects are recycled: a view that showed Weather can be moved under the Mail
+ * label. Remember which bundle supplied the artwork and keep the decoded UIImage alive, so a
+ * relabelled view gets the right picture without decoding the PNG again on every pass. */
+static char sb26_icon_key, sb26_icon_image_key;
 
 static id
 sb26_ask(id object, const char *name)
@@ -899,7 +903,7 @@ sb26_utf8(id string)
 }
 
 static id
-sb26_cgimage_at(const char *path)
+sb26_uiimage_at(const char *path)
 {
     Class ui = objc_getClass("UIImage");
     SEL make = sel_registerName("imageWithContentsOfFile:");
@@ -910,19 +914,25 @@ sb26_cgimage_at(const char *path)
     if (!str) return nil;
     image = ((id (*)(Class, SEL, id))objc_msgSend)(ui, make, (id)str);
     CFRelease(str);
-    return image ? sb26_ask(image, "CGImage") : nil;
+    return image;
+}
+
+static id
+sb26_cgimage_at(const char *path)
+{
+    return sb26_ask(sb26_uiimage_at(path), "CGImage");
 }
 
 /* Some bundles name their icon differently (Preferences.app uses
  * SettingsApp60x60@2x.png). Fall back to scanning the bundle's root. */
 static id
-sb26_cgimage_by_scan(const char *root)
+sb26_uiimage_by_scan(const char *root)
 {
     DIR *dir = opendir(root);
     struct dirent *entry;
     char sixty[256] = "", anyicon[256] = "", path[PATH_MAX];
     const char *chosen;
-    id cg;
+    id image;
     if (!dir) return nil;
     while ((entry = readdir(dir)) != NULL) {
         const char *name = entry->d_name;
@@ -936,9 +946,9 @@ sb26_cgimage_by_scan(const char *root)
     chosen = sixty[0] ? sixty : (anyicon[0] ? anyicon : NULL);
     if (!chosen) return nil;
     if (snprintf(path, sizeof(path), "%s/%s", root, chosen) >= (int)sizeof(path)) return nil;
-    cg = sb26_cgimage_at(path);
-    if (cg) fprintf(stderr, "sb26 iconview scan: using %s\n", chosen);
-    return cg;
+    image = sb26_uiimage_at(path);
+    if (image) fprintf(stderr, "sb26 iconview scan: using %s\n", chosen);
+    return image;
 }
 
 static void
@@ -949,8 +959,8 @@ sb26_fill_one_icon(id view)
         "SettingsApp60x60@2x.png", "Icon-60@2x.png", "Icon@2x.png", "Icon.png",
         "AppIcon60x60@2x~iphone.png", "icon-60@2x.png",
     };
-    id layer, icon, app, base, url, cg = nil;
-    const char *root;
+    id layer, icon, app, base, url, prev, cached, image = nil, cg = nil;
+    const char *root, *prev_root;
     char path[PATH_MAX];
     unsigned i;
     Class tx;
@@ -958,7 +968,6 @@ sb26_fill_one_icon(id view)
     sb26_icons_seen++;
     layer = sb26_ask(view, "layer");
     if (!layer) return;
-    if (sb26_ask(layer, "contents")) { sb26_icons_had_contents++; return; }
 
     icon = sb26_ask(view, "icon");
     app = sb26_ask(icon, "application");
@@ -1002,14 +1011,43 @@ sb26_fill_one_icon(id view)
         }
     }
     if (!root) { sb26_icons_no_path++; return; }
-    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        if (snprintf(path, sizeof(path), "%s/%s", root, names[i]) >= (int)sizeof(path)) continue;
-        if (access(path, R_OK) != 0) continue;
-        cg = sb26_cgimage_at(path);
-        if (cg) break;
+
+    /* v59/v60 only asked "is contents non-nil?", so a recycled view kept its old artwork under
+     * the new label. Compare the bundle path the cached picture came from with the view's CURRENT
+     * icon. Even when they match, re-assert our CGImage: -updateImage: can replace layer.contents
+     * with the (nil / black) Metal-produced image behind our back. */
+    prev = objc_getAssociatedObject(view, &sb26_icon_key);
+    cached = objc_getAssociatedObject(view, &sb26_icon_image_key);
+    prev_root = sb26_utf8(prev);
+    if (prev_root && cached && strcmp(prev_root, root) == 0) {
+        cg = sb26_ask(cached, "CGImage");
+        if (cg) sb26_icons_refreshed++;
+        else cached = nil;
     }
-    if (!cg) cg = sb26_cgimage_by_scan(root);
-    if (!cg) { sb26_icons_no_image++; return; }
+    if (!cg) {
+        for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            if (snprintf(path, sizeof(path), "%s/%s", root, names[i]) >= (int)sizeof(path)) continue;
+            if (access(path, R_OK) != 0) continue;
+            image = sb26_uiimage_at(path);
+            if (image) break;
+        }
+        if (!image) image = sb26_uiimage_by_scan(root);
+        if (!image) { sb26_icons_no_image++; return; }
+        cg = sb26_ask(image, "CGImage");
+        if (!cg) { sb26_icons_no_image++; return; }
+        {
+            CFStringRef bound = CFStringCreateWithCString(kCFAllocatorDefault, root,
+                kCFStringEncodingUTF8);
+            if (bound) {
+                objc_setAssociatedObject(view, &sb26_icon_key, (id)bound,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                CFRelease(bound);
+                objc_setAssociatedObject(view, &sb26_icon_image_key, image,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        sb26_icons_filled++;
+    }
 
     tx = objc_getClass("CATransaction");
     if (tx) {
@@ -1019,7 +1057,6 @@ sb26_fill_one_icon(id view)
     ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
     ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
     if (tx) ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("commit"));
-    sb26_icons_filled++;
 }
 
 static void
@@ -1145,9 +1182,9 @@ sb26_icon_late_step(void *context)
     sb26_fill_all_icons();
     sb26_fill_wallpaper();
     fprintf(stderr,
-        "sb26: icons +%lus: filled=%u seen=%u had=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u"
+        "sb26: icons +%lus: filled=%u seen=%u refilled=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u"
         " | wall seen=%u filled=%u had=%u noimg=%u layers=%u\n",
-        (unsigned long)at, sb26_icons_filled, sb26_icons_seen, sb26_icons_had_contents,
+        (unsigned long)at, sb26_icons_filled, sb26_icons_seen, sb26_icons_refreshed,
         sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
         sb26_icon_fallback_calls, sb26_icon_fallback_wrapped,
         sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg, sb26_wall_layers);

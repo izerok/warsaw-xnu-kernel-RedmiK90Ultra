@@ -1752,18 +1752,10 @@ struct gem_close { uint32_t handle, pad; };
 	}
 }
 
-/* QuartzCore's texture-layout object requires initialization, copy and finalization.
- * Return nil until those operations are implemented along with size/alignment.
- */
-- (id)newTextureLayoutWithDescriptor:(MTLTextureDescriptor *)descriptor
-			isHeapOrBufferBacked:(BOOL)backed
-{
-	(void)descriptor;
-	(void)backed;
-	RW_ONCE("redwoodmetal: texture-layout initialization/copy/finalization unsupported; "
-		"newTextureLayoutWithDescriptor returns nil\n");
-	return nil;
-}
+/* -newTextureLayoutWithDescriptor:isHeapOrBufferBacked: is a category at the end of this
+ * file (redwoodmetal_texture_layout.inc). Returning nil here made QuartzCore build a zero-length
+ * CompressedImage for the switcher's ATX wallpaper snapshot: the last line SpringBoard printed
+ * before dying on an icon tap was "newTextureLayoutWithDescriptor returns nil". */
 
 /*
  * A resource group names resources whose cache lines the GPU may drop at the end of a pass -- an
@@ -1792,33 +1784,16 @@ struct gem_close { uint32_t handle, pad; };
 	return nil;
 }
 
-/*
- * A texture over memory the CALLER allocated, which CoreAnimation's update_texture stores and
- * uses (docs/metal.md 10.48, selector 5 of the class-declared list). It is answered by name
- * rather than left unrecognized, because an unrecognized selector is terminate() and a named nil
- * is a line in the log -- mediaserverd died 43 times on the one above this before it was
- * answered at all.
+/* -newTextureWithBytesNoCopy:length:descriptor:deallocator: now lives in the
+ * TextureLayout category at the end of this file. The old nil stub made QuartzCore
+ * build a zero-length CompressedImage for the switcher ATX snapshot; SpringBoard
+ * exited on an icon tap right after "newTextureLayoutWithDescriptor returns nil".
+ * The category copies the layout memory once with -replaceRegion:, which this
+ * driver does implement (redwoodmetal_texture.inc).
  *
- * nil and not a texture, because the contract has no call for it. rwa_texture_from_surface takes
- * an IOSurface, which the kernel hands over as a buffer (kRedwoodSurface); a bare pointer into
- * the caller's address space is a different import, and a texture made by copying instead would
- * be wrong in a way nothing would report: the caller writes to its own pages and expects the
- * texture to change.
+ * A texture over memory the CALLER allocated is still answered by name rather than
+ * left unrecognized, because an unrecognized selector is terminate().
  */
-- (id)newTextureWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
-		     descriptor:(MTLTextureDescriptor *)descriptor
-		    deallocator:(void (^)(void *, NSUInteger))deallocator
-{
-	(void)bytes;
-	(void)length;
-	(void)descriptor;
-	(void)deallocator;
-	RW_ONCE("redwoodmetal: a texture over the caller's own memory was asked for, and the "
-		"contract has no import for a bare pointer -- only for an IOSurface. Copying "
-		"instead would be worse than nil: the caller writes to its pages and expects the "
-		"texture to follow\n");
-	return nil;
-}
 
 - (id)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
 {
@@ -5694,3 +5669,7 @@ ensure_function_encoder(void)
 	class_replaceMethod(fn, sel_getUid("newArgumentEncoderWithBufferIndex:reflection:"),
 			    (IMP)rw_function_argument_encoder_reflection, "@@:Q^@");
 }
+
+/* Texture layouts for QuartzCore's compressed images. Included last: the layout's
+ * methodSignatureForSelector: uses protocol_declares() from redwoodmetal_blit.inc. */
+#include "redwoodmetal_texture_layout.inc"
