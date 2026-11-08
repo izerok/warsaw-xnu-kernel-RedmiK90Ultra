@@ -866,6 +866,174 @@ install_powerdown_hooks(void)
     fprintf(stderr, "sb26: powerdown hooks installed (%u methods)\n", patched);
 }
 
+/* --- v57: put a real CGImage into every SBIconImageView --------------------
+ * v56 proved that nothing but SBCalendarIconImageProvider implements
+ * -iconLayerWithInfo:..., so the ICRIconLayer fallback cannot reach the home
+ * screen icons. 18 SBIconImageView layers have contents=none while their
+ * labels have CGImages; the app bundles carry AppIcon60x60@2x.png. Read that
+ * PNG and set it on the view's own layer. Every access is guarded, and the
+ * object graph is printed once so a failed lookup tells us what 23G90 answers.
+ */
+static unsigned sb26_icons_seen, sb26_icons_filled, sb26_icons_had_contents,
+                sb26_icons_no_path, sb26_icons_no_image;
+static int sb26_icon_diag_done;
+
+static id
+sb26_ask(id object, const char *name)
+{
+    SEL sel;
+    if (!object) return nil;
+    sel = sel_registerName(name);
+    if (!class_respondsToSelector(object_getClass(object), sel)) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, sel);
+}
+
+static const char *
+sb26_utf8(id string)
+{
+    SEL sel;
+    if (!string) return NULL;
+    sel = sel_registerName("UTF8String");
+    if (!class_respondsToSelector(object_getClass(string), sel)) return NULL;
+    return ((const char *(*)(id, SEL))objc_msgSend)(string, sel);
+}
+
+static id
+sb26_cgimage_at(const char *path)
+{
+    Class ui = objc_getClass("UIImage");
+    SEL make = sel_registerName("imageWithContentsOfFile:");
+    CFStringRef str;
+    id image;
+    if (!ui || !class_respondsToSelector(object_getClass((id)ui), make)) return nil;
+    str = CFStringCreateWithCString(kCFAllocatorDefault, path, kCFStringEncodingUTF8);
+    if (!str) return nil;
+    image = ((id (*)(Class, SEL, id))objc_msgSend)(ui, make, (id)str);
+    CFRelease(str);
+    return image ? sb26_ask(image, "CGImage") : nil;
+}
+
+static void
+sb26_fill_one_icon(id view)
+{
+    static const char *names[] = {
+        "AppIcon60x60@2x.png", "AppIcon60x60@3x.png", "AppIcon76x76@2x.png",
+        "Icon-60@2x.png", "Icon@2x.png", "Icon.png",
+    };
+    id layer, icon, app, base, url, cg = nil;
+    const char *root;
+    char path[PATH_MAX];
+    unsigned i;
+    Class tx;
+
+    sb26_icons_seen++;
+    layer = sb26_ask(view, "layer");
+    if (!layer) return;
+    if (sb26_ask(layer, "contents")) { sb26_icons_had_contents++; return; }
+
+    icon = sb26_ask(view, "icon");
+    app = sb26_ask(icon, "application");
+    if (!app) app = sb26_ask(icon, "applicationProxy");
+    base = sb26_ask(app, "bundlePath");
+    if (!base) base = sb26_ask(app, "path");
+    if (!base) { url = sb26_ask(app, "bundleURL"); base = sb26_ask(url, "path"); }
+    root = sb26_utf8(base);
+
+    if (!sb26_icon_diag_done) {
+        static const char *probes[] = {
+            "application", "applicationProxy", "bundleIdentifier", "bundlePath", "path",
+            "displayName", "nodeIdentifier", "uniqueIdentifier", "iconIdentifier",
+            "applicationBundleIdentifier", "applicationBundleID", "iconImage", "image",
+            "icon", "applicationDisplayName", "applicationID",
+        };
+        sb26_icon_diag_done = 1;
+        fprintf(stderr, "sb26 iconview: view=%s icon=%s app=%s root=%s layer=%s\n",
+            class_getName(object_getClass(view)), icon ? class_getName(object_getClass(icon)) : "-",
+            app ? class_getName(object_getClass(app)) : "-", root ? root : "-",
+            class_getName(object_getClass(layer)));
+        for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+            id value = sb26_ask(icon, probes[i]);
+            const char *text;
+            if (!value) value = sb26_ask(view, probes[i]);
+            if (!value) continue;
+            text = sb26_utf8(value);
+            fprintf(stderr, "sb26 iconview probe %-30s = %s %s\n", probes[i],
+                class_getName(object_getClass(value)), text ? text : "(object)");
+        }
+    }
+    if (!root) {
+        /* 23G90 may answer a bundle identifier but no path; NSBundle can map it. */
+        id bid = sb26_ask(icon, "bundleIdentifier");
+        Class nb = objc_getClass("NSBundle");
+        SEL with = sel_registerName("bundleWithIdentifier:");
+        if (!bid) bid = sb26_ask(icon, "applicationBundleIdentifier");
+        if (bid && nb && class_respondsToSelector(object_getClass((id)nb), with)) {
+            id bundle = ((id (*)(Class, SEL, id))objc_msgSend)(nb, with, bid);
+            root = sb26_utf8(sb26_ask(bundle, "bundlePath"));
+        }
+    }
+    if (!root) { sb26_icons_no_path++; return; }
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (snprintf(path, sizeof(path), "%s/%s", root, names[i]) >= (int)sizeof(path)) continue;
+        if (access(path, R_OK) != 0) continue;
+        cg = sb26_cgimage_at(path);
+        if (cg) break;
+    }
+    if (!cg) { sb26_icons_no_image++; return; }
+
+    tx = objc_getClass("CATransaction");
+    if (tx) {
+        ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("begin"));
+        ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx, sel_registerName("setDisableActions:"), YES);
+    }
+    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
+    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
+    if (tx) ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("commit"));
+    sb26_icons_filled++;
+}
+
+static void
+sb26_fill_icons_recursive(id view, int depth)
+{
+    id subviews;
+    unsigned long count, i;
+    const char *cls;
+    if (!view || depth > 14) return;
+    cls = class_getName(object_getClass(view));
+    if (cls && strstr(cls, "SBIconImageView")) sb26_fill_one_icon(view);
+    subviews = sb26_ask(view, "subviews");
+    if (!subviews) return;
+    if (!class_respondsToSelector(object_getClass(subviews), sel_registerName("count"))) return;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(subviews, sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id child = ((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews,
+            sel_registerName("objectAtIndex:"), i);
+        sb26_fill_icons_recursive(child, depth + 1);
+    }
+}
+
+static void
+sb26_fill_all_icons(void)
+{
+    Class wc = objc_getClass("UIWindow");
+    SEL all = sel_registerName("allWindowsIncludingInternalWindows:onlyVisibleWindows:");
+    id windows = nil, app;
+    unsigned long count, i;
+    if (wc && class_respondsToSelector(object_getClass((id)wc), all))
+        windows = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)((id)wc, all, YES, YES);
+    if (!windows) {
+        app = sb26_ask((id)objc_getClass("UIApplication"), "sharedApplication");
+        windows = sb26_ask(app, "windows");
+    }
+    if (!windows) return;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(windows, sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id w = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows,
+            sel_registerName("objectAtIndex:"), i);
+        sb26_fill_icons_recursive(w, 0);
+    }
+}
+
 /* Icon provider classes are loaded lazily. Re-scan a few times during the first minute,
  * then ask SpringBoard to rebuild the icon views so the newly hooked providers are used. */
 static void
@@ -873,10 +1041,13 @@ sb26_icon_late_step(void *context)
 {
     uintptr_t at = (uintptr_t)context;
     sb26_install_all_icon_layer_fallbacks();
-    fprintf(stderr, "sb26: icon fallback +%lus: hooked=%u calls=%u wrapped=%u no_image=%u\n",
-        (unsigned long)at, sb26_icon_hooked, sb26_icon_fallback_calls,
-        sb26_icon_fallback_wrapped, sb26_icon_fallback_no_image);
     sb26_stepped_refresh_step((void *)(uintptr_t)100);
+    sb26_fill_all_icons();
+    fprintf(stderr,
+        "sb26: icons +%lus: filled=%u seen=%u had=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u\n",
+        (unsigned long)at, sb26_icons_filled, sb26_icons_seen, sb26_icons_had_contents,
+        sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
+        sb26_icon_fallback_calls, sb26_icon_fallback_wrapped);
 }
 
 static void
@@ -935,7 +1106,7 @@ install_sb26(void)
     install_unlock();
     sb26_install_all_icon_layer_fallbacks();
     {
-        static const int icon_delays[] = { 3, 8, 18, 35, 60 };
+        static const int icon_delays[] = { 3, 8, 18, 30, 45, 60, 90, 120, 150 };
         for (unsigned i = 0; i < sizeof(icon_delays) / sizeof(icon_delays[0]); i++)
             dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)icon_delays[i] * NSEC_PER_SEC),
                 dispatch_get_main_queue(), (void *)(uintptr_t)icon_delays[i], sb26_icon_late_step);
