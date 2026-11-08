@@ -913,12 +913,41 @@ sb26_cgimage_at(const char *path)
     return image ? sb26_ask(image, "CGImage") : nil;
 }
 
+/* Some bundles name their icon differently (Preferences.app uses
+ * SettingsApp60x60@2x.png). Fall back to scanning the bundle's root. */
+static id
+sb26_cgimage_by_scan(const char *root)
+{
+    DIR *dir = opendir(root);
+    struct dirent *entry;
+    char sixty[256] = "", anyicon[256] = "", path[PATH_MAX];
+    const char *chosen;
+    id cg;
+    if (!dir) return nil;
+    while ((entry = readdir(dir)) != NULL) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len < 5 || len >= sizeof(sixty) || strcmp(name + len - 4, ".png") != 0) continue;
+        if (strstr(name, "60x60") && !sixty[0]) snprintf(sixty, sizeof(sixty), "%s", name);
+        else if ((strstr(name, "Icon") || strstr(name, "icon")) && !anyicon[0])
+            snprintf(anyicon, sizeof(anyicon), "%s", name);
+    }
+    closedir(dir);
+    chosen = sixty[0] ? sixty : (anyicon[0] ? anyicon : NULL);
+    if (!chosen) return nil;
+    if (snprintf(path, sizeof(path), "%s/%s", root, chosen) >= (int)sizeof(path)) return nil;
+    cg = sb26_cgimage_at(path);
+    if (cg) fprintf(stderr, "sb26 iconview scan: using %s\n", chosen);
+    return cg;
+}
+
 static void
 sb26_fill_one_icon(id view)
 {
     static const char *names[] = {
         "AppIcon60x60@2x.png", "AppIcon60x60@3x.png", "AppIcon76x76@2x.png",
-        "Icon-60@2x.png", "Icon@2x.png", "Icon.png",
+        "SettingsApp60x60@2x.png", "Icon-60@2x.png", "Icon@2x.png", "Icon.png",
+        "AppIcon60x60@2x~iphone.png", "icon-60@2x.png",
     };
     id layer, icon, app, base, url, cg = nil;
     const char *root;
@@ -979,6 +1008,7 @@ sb26_fill_one_icon(id view)
         cg = sb26_cgimage_at(path);
         if (cg) break;
     }
+    if (!cg) cg = sb26_cgimage_by_scan(root);
     if (!cg) { sb26_icons_no_image++; return; }
 
     tx = objc_getClass("CATransaction");
