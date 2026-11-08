@@ -29,6 +29,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <execinfo.h>
+#include <signal.h>
 
 extern const void *_dyld_get_shared_cache_range(size_t *);
 extern id MTLCreateSystemDefaultDevice(void);
@@ -699,6 +701,45 @@ sb26_ensure_chinese_preferences(void)
 typedef struct { double x, y; } sb26_pt;
 
 /* ---------------------------------------------------------------------------------------
+ * v65: iconservicesagent has died generation after generation (pid 60, 84, 86, 93, 99, 105,
+ * and in v61/v62 alike) with NO abort message on stderr, always in the middle of our Metal
+ * shim's work, and every death strands SpringBoard's sync XPC request forever: the tap-an-icon
+ * freeze. Print a backtrace on fatal signals so the crash site finally shows up on serial.
+ * --------------------------------------------------------------------------------------- */
+static void
+sb26_crash_logger(int number, siginfo_t *info, void *context)
+{
+    void *frames[32];
+    char line[1100];
+    int n = backtrace(frames, 32), k;
+
+    (void)context;
+    k = snprintf(line, sizeof(line), "sb26 CRASH: %s: SIGNAL %d at %p, the stack:",
+        getprogname() ? getprogname() : "?", number, info ? info->si_addr : NULL);
+    for (int i = 0; i < n && k < (int)sizeof(line) - 24; i++) {
+        k += snprintf(line + k, sizeof(line) - (size_t)k, " %p", frames[i]);
+    }
+    line[k++] = '\n';
+    (void)write(2, line, (size_t)k);
+    signal(number, SIG_DFL);
+    raise(number);
+}
+
+/* Installed in EVERY process the dylib reaches, before the SpringBoard-only early return. */
+static void
+sb26_install_crash_logger(void)
+{
+    static const int signals[] = { SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE };
+    struct sigaction action = { 0 };
+
+    action.sa_sigaction = sb26_crash_logger;
+    action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESETHAND;
+    sigemptyset(&action.sa_mask);
+    for (unsigned i = 0; i < sizeof(signals) / sizeof(signals[0]); i++)
+        sigaction(signals[i], &action, NULL);
+}
+
+/* ---------------------------------------------------------------------------------------
  * v64: SpringBoard's main thread freezes on an icon tap inside
  *   mach_msg2_trap -> dispatch_mach_send_with_result_and_wait_for_reply ->
  *   xpc_connection_send_message_with_reply_sync
@@ -713,6 +754,12 @@ typedef struct { double x, y; } sb26_pt;
  * Every "->" line is printed BEFORE the call; the one with no matching "<-" is the service
  * SpringBoard is stuck on. A thread-local depth guard keeps a hypothetical recursion from
  * turning into a stack overflow.
+ *
+ * v64 on the phone: the never-answered requests are com.apple.iconservices — the
+ * iconservicesagent process dies (EXC_CORPSE_NOTIFY, pid 60/84/86/93/99/105, no stderr
+ * output, always mid-Metal-shim) with SpringBoard's sync request already on the wire,
+ * which strands the waiting thread forever; enough strands take down the main thread.
+ * v65 dumps every iconservices message to see what the agent last received.
  * --------------------------------------------------------------------------------------- */
 static atomic_uint sb26_xpc_sync_n;
 static _Thread_local unsigned sb26_xpc_depth;
@@ -722,11 +769,14 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
 {
     const char *name = connection ? xpc_connection_get_name(connection) : NULL;
     unsigned n = atomic_fetch_add(&sb26_xpc_sync_n, 1) + 1;
+    int is_icons = name && !strcmp(name, "com.apple.iconservices");
     xpc_object_t reply;
 
-    if (n <= 60) {
+    /* v64's first-60 cap missed the requests that matter; the agent dies on
+     * iconservices traffic, so every iconservices message is dumped in full. */
+    if (n <= 60 || is_icons) {
         char *desc = message ? xpc_copy_description(message) : NULL;
-        fprintf(stderr, "sb26 xpc sync #%u -> name=%s msg=%.170s\n",
+        fprintf(stderr, "sb26 xpc sync #%u -> name=%s msg=%.600s\n",
             n, name ? name : "(anonymous)", desc ? desc : "-");
         if (desc) free(desc);
     } else {
@@ -1188,6 +1238,9 @@ __attribute__((constructor)) static void
 install_sb26(void)
 {
     const char *prog = getprogname();
+
+    sb26_install_crash_logger();
+
     if (!prog || (strcmp(prog, "SpringBoard") && strcmp(prog, "Preferences"))) return;
 
     sb26_ensure_chinese_preferences();
