@@ -26,7 +26,6 @@
 #include <sys/sysctl.h>
 #include <mach-o/dyld.h>
 #include <xpc/xpc.h>
-#include <dlfcn.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -697,88 +696,55 @@ sb26_ensure_chinese_preferences(void)
 }
 
 
-/* ---------------------------------------------------------------------------------------
- * v63: SpringBoard's main thread freezes on an icon tap inside
- *   mach_msg2_trap -> dispatch_mach_send_with_result_and_wait_for_reply ->
- *   xpc_connection_send_message_with_reply_sync
- * and never returns. The kernel freeze detector shows the same stack from t=94 to t=1991.
- * Nothing in the kernel log names the peer, so interpose the synchronous XPC entry point and
- * print the connection's name BEFORE the call (after it, the log would never be produced).
- *
- * com.redwood.xpcguard, observed on a global queue so it still works once the main queue is
- * stuck, switches in a bounded async reply path (2 s). That is a rescue switch, off by default,
- * so v63's normal boot is behaviourally identical to v62's.
- * --------------------------------------------------------------------------------------- */
 typedef struct { double x, y; } sb26_pt;
 
-static atomic_int  sb26_xpc_guard;
+/* ---------------------------------------------------------------------------------------
+ * v64: SpringBoard's main thread freezes on an icon tap inside
+ *   mach_msg2_trap -> dispatch_mach_send_with_result_and_wait_for_reply ->
+ *   xpc_connection_send_message_with_reply_sync
+ * and never returns (v62: the same stack from t=94 to t=1991).
+ *
+ * v63 tried to replace that call with an async reply + semaphore and crashed SpringBoard four
+ * times with "-[NSXPCConnection _sendInvocation:...]: encoded data has been corrupted":
+ * NSXPCConnection owns the reply encoding, so an interposer must NOT change the call's shape.
+ * v64 therefore only logs, in exactly the style of sb26_hook_CFBundleCopyBundleLocalizations
+ * above (calling the original symbol from the interposer does not recurse here).
+ *
+ * Every "->" line is printed BEFORE the call; the one with no matching "<-" is the service
+ * SpringBoard is stuck on. A thread-local depth guard keeps a hypothetical recursion from
+ * turning into a stack overflow.
+ * --------------------------------------------------------------------------------------- */
 static atomic_uint sb26_xpc_sync_n;
-
-typedef xpc_object_t (*sb26_xpc_sync_fn)(xpc_connection_t, xpc_object_t);
-
-static sb26_xpc_sync_fn   sb26_xpc_sync_real;
-
-static xpc_object_t
-sb26_xpc_async_bounded(xpc_connection_t connection, xpc_object_t message,
-                       unsigned n, const char *name)
-{
-    __block xpc_object_t reply = NULL;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
-    if (!sem || !q) return NULL;
-
-    xpc_connection_send_message_with_reply(connection, message, q, ^(xpc_object_t r) {
-        if (r) reply = xpc_retain(r);
-        dispatch_semaphore_signal(sem);
-    });
-    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
-        fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s\n", n, name ? name : "-");
-        return NULL;
-    }
-    fprintf(stderr, "sb26 xpc sync #%u async reply=%p name=%s\n", n, reply, name ? name : "-");
-    return reply;               /* +1, matching the synchronous API's ownership */
-}
+static _Thread_local unsigned sb26_xpc_depth;
 
 static xpc_object_t
 sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
 {
     const char *name = connection ? xpc_connection_get_name(connection) : NULL;
     unsigned n = atomic_fetch_add(&sb26_xpc_sync_n, 1) + 1;
+    xpc_object_t reply;
 
-    if (n <= 160) {
+    if (n <= 60) {
         char *desc = message ? xpc_copy_description(message) : NULL;
-        fprintf(stderr, "sb26 xpc sync #%u -> conn=%p name=%s guard=%d msg=%.190s\n",
-            n, connection, name ? name : "(anonymous)", atomic_load(&sb26_xpc_guard),
-            desc ? desc : "-");
+        fprintf(stderr, "sb26 xpc sync #%u -> name=%s msg=%.170s\n",
+            n, name ? name : "(anonymous)", desc ? desc : "-");
         if (desc) free(desc);
+    } else {
+        fprintf(stderr, "sb26 xpc sync #%u -> name=%s\n", n, name ? name : "(anonymous)");
     }
 
-    if (!sb26_xpc_sync_real)
-        sb26_xpc_sync_real = (sb26_xpc_sync_fn)dlsym(RTLD_NEXT,
-            "xpc_connection_send_message_with_reply_sync");
+    /* Only reachable if dyld ever resolves the original back to this interposer. */
+    if (sb26_xpc_depth) {
+        fprintf(stderr, "sb26 xpc sync #%u RECURSION name=%s\n", n, name ? name : "-");
+        return NULL;
+    }
 
-    /* A NULL or self-referential resolution would crash / recurse forever. */
-    if (!sb26_xpc_sync_real || sb26_xpc_sync_real == (sb26_xpc_sync_fn)sb26_hook_xpc_sync)
-        return sb26_xpc_async_bounded(connection, message, n, name);
+    sb26_xpc_depth++;
+    reply = xpc_connection_send_message_with_reply_sync(connection, message);
+    sb26_xpc_depth--;
 
-    if (atomic_load(&sb26_xpc_guard))
-        return sb26_xpc_async_bounded(connection, message, n, name);
-
-    return sb26_xpc_sync_real(connection, message);
-}
-
-static void
-sb26_install_xpc_guard_notify(void)
-{
-    int token;
-    notify_register_dispatch("com.redwood.xpcguard", &token,
-        dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^(int t) {
-            (void)t;
-            int on = !atomic_load(&sb26_xpc_guard);
-            atomic_store(&sb26_xpc_guard, on);
-            fprintf(stderr, "sb26: xpc guard %s after %u sync calls\n",
-                on ? "ON (2s bounded reply)" : "OFF", atomic_load(&sb26_xpc_sync_n));
-        });
+    fprintf(stderr, "sb26 xpc sync #%u <- name=%s reply=%p\n", n, name ? name : "-", reply);
+    return reply;
 }
 
 __attribute__((used, section("__DATA,__interpose"))) static const struct {
@@ -990,8 +956,21 @@ sb26_fill_one_icon(id view)
             sb26_pt (*at)(id, SEL) = (sb26_pt (*)(id, SEL))objc_msgSend;
             pos = at(layer, sel_registerName("position"));
         }
-        fprintf(stderr, "sb26 iconmap: #%u root=%s bid=%s pos=%.0f,%.0f\n",
-            sb26_icons_seen, root, bundle ? bundle : "-", pos.x, pos.y);
+        id parent = sb26_ask(view, "superview");
+        id picon = sb26_ask(parent, "icon");
+        id papp = sb26_ask(picon, "application");
+        const char *proot = sb26_utf8(sb26_ask(papp, "bundlePath"));
+        sb26_pt ppos = { -1, -1 };
+        id player = sb26_ask(parent, "layer");
+        if (player && class_respondsToSelector(object_getClass(player), sel_registerName("position"))) {
+            sb26_pt (*at)(id, SEL) = (sb26_pt (*)(id, SEL))objc_msgSend;
+            ppos = at(player, sel_registerName("position"));
+        }
+        fprintf(stderr, "sb26 iconmap: #%u root=%s bid=%s pos=%.0f,%.0f"
+            " | parent=%s proot=%s ppos=%.0f,%.0f\n",
+            sb26_icons_seen, root, bundle ? bundle : "-", pos.x, pos.y,
+            parent ? class_getName(object_getClass(parent)) : "-", proot ? proot : "-",
+            ppos.x, ppos.y);
     }
 
     /* v59/v60 only asked "is contents non-nil?", so a recycled view kept its old artwork under
@@ -1248,7 +1227,6 @@ install_sb26(void)
     }
     sb26_install_layer_dump();
     sb26_install_icon_refresh_notify();
-    sb26_install_xpc_guard_notify();
     sb26_install_rate(slide);
     install_powerdown_hooks();
 
