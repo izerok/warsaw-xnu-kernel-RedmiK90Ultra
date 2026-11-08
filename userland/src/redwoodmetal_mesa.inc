@@ -45,6 +45,13 @@ static struct {
 	int (*argbuf_encode_sampler)(struct rwa_buffer *, size_t, unsigned,
 				     struct rwa_sampler *, char *, size_t);
 	unsigned (*argbuf_encoded_members)(const struct rwa_buffer *, size_t);
+	/* Optional: the same pipeline with MTLLinkedFunctions inlined into its
+	 * fragment stage.  A library without it still answers render_create. */
+	struct rwa_render *(*render_create_linked)(struct rwa_device *, const void *, size_t,
+						   const char *, const void *, size_t, const char *,
+						   const struct rwa_linked_function *, unsigned,
+						   const struct rwa_render_shape *,
+						   struct rwa_render_info *, char *, size_t);
 	struct rwa_render *(*render_create)(struct rwa_device *, const void *, size_t,
 					    const char *, const void *, size_t, const char *,
 					    const struct rwa_render_shape *,
@@ -114,6 +121,7 @@ mesa_available(void)
 	 * yet draw is a real state of this work, and the driver says so when asked to draw
 	 * rather than refusing to exist. */
 	*(void **)&mesa.render_create = dlsym(mesa.handle, "rwa_render_create");
+	*(void **)&mesa.render_create_linked = dlsym(mesa.handle, "rwa_render_create_linked");
 	*(void **)&mesa.render_destroy = dlsym(mesa.handle, "rwa_render_destroy");
 	*(void **)&mesa.render_draw = dlsym(mesa.handle, "rwa_render_draw");
 	/* Depth likewise: a library that can draw and not test depth is a real state of

@@ -101,6 +101,7 @@
 #include <IOKit/IOKitLib.h>
 #include <mach/mach_time.h>
 #include <dlfcn.h>
+#include <dispatch/dispatch.h>   /* rw_stitch_install_hooks' dispatch_once */
 
 #include "redwood_drawable.h"
 #include <stdarg.h>
@@ -321,6 +322,27 @@ struct rwa_draw {
 	/* the resolveTexture of each colour attachment, or NULL where there is none.
 	 * Appended with the two above: air_metal.h says what the library does with one. */
 	struct rwa_texture *const *resolve;
+};
+
+/* A function linked into the fragment stage at pipeline time (MTLLinkedFunctions).
+ * These two are the driver's copy of air_metal.h's rwa_stitch_node /
+ * rwa_linked_function; the library asserts the layouts agree.  RenderBox in iOS 26
+ * links a stitched function into a fragment shader that calls an extern visible
+ * `custom_fn`, and without this the frontend refuses the pipeline by name. */
+struct rwa_stitch_node {
+	const void *bitcode;
+	size_t size;
+	const char *function;
+	unsigned num_args;
+	const int *args;
+	unsigned num_after;
+	const unsigned *after;
+};
+struct rwa_linked_function {
+	const char *name;
+	unsigned num_nodes;
+	const struct rwa_stitch_node *nodes;
+	unsigned output;
 };
 
 /*
@@ -917,6 +939,12 @@ _Static_assert(sizeof(struct MTLTargetDeviceArch) == 24 &&
 - (id)redwoodArgumentEncoderForFunction:(id)function bufferIndex:(NSUInteger)index;
 @end
 
+/* Specialization proxies, stitched libraries and MTLLinkedFunctions conversion.
+ * The compiler library's rwa_render_create_linked already knows how to inline a
+ * stitching graph; this is the Metal side that reads what RenderBox put in the
+ * pipeline descriptor.  Included here because it is a category on the class above. */
+#include "redwoodmetal_stitch.inc"
+
 /* Declaring the protocol is the gate both assertions in MTLAddDevice read. Done at +load
  * for the bundle case (Metal loads us, so Metal is already there) and again before the
  * first use, because a library can also be brought in by hand, before Metal. */
@@ -1164,6 +1192,10 @@ struct gem_close { uint32_t handle, pad; };
 - (instancetype)initWithAcceleratorPort:(io_service_t)port
 {
 	ensure_spi([self class]);
+	/* _MTLLibrary sends the specializations it cannot make in process to
+	 * MTLCompilerService, which is not alive here.  The hook answers them with a
+	 * proxy over the unspecialized function instead. */
+	rw_stitch_install_hooks();
 
 	self = [super init];
 	if (self == nil) {
@@ -1334,6 +1366,18 @@ struct gem_close { uint32_t handle, pad; };
 
 	id vertex = [descriptor vertexFunction];
 	id fragment = [descriptor fragmentFunction];
+
+	/* A specialization proxy answers to the specialized name but its AIR module's
+	 * entry point is the function underneath it. */
+	if ([vertex respondsToSelector:@selector(redwoodUnspecializedFunction)]) {
+		vertex = [vertex redwoodUnspecializedFunction];
+	}
+	if ([fragment respondsToSelector:@selector(redwoodUnspecializedFunction)]) {
+		fragment = [fragment redwoodUnspecializedFunction];
+	}
+	/* RenderBox's linked/stitched functions, printed once per descriptor so a boot
+	 * log says exactly what the pipeline was asked to link. */
+	rw_stitch_dump_linked(descriptor);
 
 	if (fragment == nil) {
 		return [self fail:error with:@"the descriptor has no fragment function, and this "
@@ -1522,12 +1566,50 @@ struct gem_close { uint32_t handle, pad; };
 	 * while it animates -- ten a second in one Control Center pull -- and if that is where
 	 * a frame's time goes, the answer is a pipeline it can reuse rather than a faster one. */
 	uint64_t compile_began = mach_absolute_time();
-	struct rwa_render *render = mesa.render_create(_mesa,
-	    vertex_air != nil ? [vertex_air bytes] : NULL,
-	    vertex_air != nil ? [vertex_air length] : 0,
-	    vertex != nil ? [[vertex name] UTF8String] : NULL,
-	    [fragment_air bytes], [fragment_air length], [[fragment name] UTF8String],
-	    &shape, &info, why, sizeof(why));
+	/* MTLLinkedFunctions: the fragment stage's visible and stitched functions, as the
+	 * compiler library's rwa_render_create_linked takes them.  An older library without
+	 * that call still gets the pipeline without linked functions, which is the state
+	 * the "only declares" refusal describes. */
+	struct rwa_linked_function linked[RW_LINKED_MAX];
+	NSMutableData *linked_scratch = [NSMutableData data];
+	unsigned num_linked = mesa.render_create_linked != NULL
+	    ? rw_linked_fragment_functions(descriptor, linked, RW_LINKED_MAX, linked_scratch) : 0;
+	/* air.visible_function_references names the declared call
+	 * "<name>.MTL_VISIBLE_FN_REF", while the MTLFunction Metal links answers -name
+	 * as "<name>".  The frontend matches by strcmp, so offer both spellings of the
+	 * first linked function; the nodes are shared and freed once through scratch. */
+	if (num_linked > 0 && num_linked < RW_LINKED_MAX) {
+		const char *base = linked[0].name;
+		size_t n = base != NULL ? strlen(base) : 0;
+		static const char suffix[] = ".MTL_VISIBLE_FN_REF";
+
+		if (n > 0 && strstr(base, suffix) == NULL) {
+			char *alias = malloc(n + sizeof(suffix));
+
+			if (alias != NULL) {
+				memcpy(alias, base, n);
+				memcpy(alias + n, suffix, sizeof(suffix));
+				[linked_scratch appendBytes:&alias length:sizeof(alias)];
+				linked[num_linked] = linked[0];
+				linked[num_linked].name = alias;
+				num_linked++;
+			}
+		}
+	}
+	const char *vertex_name = vertex != nil ? [[vertex name] UTF8String] : NULL;
+	const char *fragment_name = [[fragment name] UTF8String];
+	struct rwa_render *render = mesa.render_create_linked != NULL
+	    ? mesa.render_create_linked(_mesa,
+		vertex_air != nil ? [vertex_air bytes] : NULL,
+		vertex_air != nil ? [vertex_air length] : 0, vertex_name,
+		[fragment_air bytes], [fragment_air length], fragment_name,
+		linked, num_linked, &shape, &info, why, sizeof(why))
+	    : mesa.render_create(_mesa,
+		vertex_air != nil ? [vertex_air bytes] : NULL,
+		vertex_air != nil ? [vertex_air length] : 0, vertex_name,
+		[fragment_air bytes], [fragment_air length], fragment_name,
+		&shape, &info, why, sizeof(why));
+	rw_linked_free(linked_scratch);
 	{
 		static unsigned long built;
 		struct mach_timebase_info tb;
@@ -1559,6 +1641,10 @@ struct gem_close { uint32_t handle, pad; };
 			air_fail_dump([vertex_air bytes], [vertex_air length], "vertex",
 			    [[vertex name] UTF8String]);
 		}
+		/* The modules a stitched fragment calls go out too: when the frontend
+		 * refuses an instruction it may be in one of these rather than in the
+		 * two stages above. */
+		rw_dump_linked(descriptor);
 		/* PRINTED as well as returned, and RW_AGAIN because the same specification
 		 * is asked for over and over: -fail: puts the sentence in an NSError and
 		 * nothing more, and whether anyone ever sees it is then the caller's
