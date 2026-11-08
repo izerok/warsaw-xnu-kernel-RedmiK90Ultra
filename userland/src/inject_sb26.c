@@ -866,6 +866,19 @@ install_powerdown_hooks(void)
     fprintf(stderr, "sb26: powerdown hooks installed (%u methods)\n", patched);
 }
 
+/* Icon provider classes are loaded lazily. Re-scan a few times during the first minute,
+ * then ask SpringBoard to rebuild the icon views so the newly hooked providers are used. */
+static void
+sb26_icon_late_step(void *context)
+{
+    uintptr_t at = (uintptr_t)context;
+    sb26_install_all_icon_layer_fallbacks();
+    fprintf(stderr, "sb26: icon fallback +%lus: hooked=%u calls=%u wrapped=%u no_image=%u\n",
+        (unsigned long)at, sb26_icon_hooked, sb26_icon_fallback_calls,
+        sb26_icon_fallback_wrapped, sb26_icon_fallback_no_image);
+    sb26_stepped_refresh_step((void *)(uintptr_t)100);
+}
+
 static void
 discovery_image_callback(const struct mach_header *header, intptr_t slide)
 {
@@ -920,6 +933,13 @@ install_sb26(void)
     }
     install_bitmap_selection(slide);
     install_unlock();
+    sb26_install_all_icon_layer_fallbacks();
+    {
+        static const int icon_delays[] = { 3, 8, 18, 35, 60 };
+        for (unsigned i = 0; i < sizeof(icon_delays) / sizeof(icon_delays[0]); i++)
+            dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)icon_delays[i] * NSEC_PER_SEC),
+                dispatch_get_main_queue(), (void *)(uintptr_t)icon_delays[i], sb26_icon_late_step);
+    }
     sb26_install_layer_dump();
     sb26_install_rate(slide);
     install_powerdown_hooks();

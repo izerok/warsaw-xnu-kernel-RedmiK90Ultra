@@ -289,61 +289,157 @@ typedef struct SBIconImageInfo SBIconImageInfo;
 
 static id (*orig_calendar_layer)(id self, SEL cmd, SBIconImageInfo info, id tc, unsigned long opts);
 
+/* Every icon provider in 23G90 answers -iconLayerWithInfo:traitCollection:options: with a
+ * layer built by ICRIconLayer. That path comes back nil on this build (the icon services agent
+ * still renders the artwork, but SpringBoard never gets a layer for it), which leaves every
+ * SBIconImageView with contents=none: the home screen shows labels and no icons. v45 (no Metal
+ * device, shouldForceBitmapImages forced YES) and v55 (Metal device, linked functions working)
+ * both look the same, so this is not a Metal or a bitmap-selection problem.
+ *
+ * A provider that cannot make a layer can still make an image: -iconImageWithInfo:... answers an
+ * ISImage with a CGImage. Wrap that CGImage in a plain CALayer, which is exactly what the
+ * Calendar-only fallback below used to do for SBCalendarIconImageProvider. Here the same
+ * fallback is installed on every class that implements the selector with Calendar's signature.
+ * The original IMP is kept per class so subclasses that inherit the method still work.
+ */
+struct sb26_icon_orig {
+    Class cls;
+    IMP imp;
+};
+#define SB26_ICON_MAX 96
+static struct sb26_icon_orig sb26_icon_origs[SB26_ICON_MAX];
+static unsigned sb26_icon_orig_count;
+static unsigned sb26_icon_hooked;
+static unsigned sb26_icon_fallback_calls;
+static unsigned sb26_icon_fallback_wrapped;
+static unsigned sb26_icon_fallback_no_image;
+
+static id
+sb26_wrap_icon_image(id self, SBIconImageInfo info, id tc, unsigned long opts)
+{
+    SEL img_sel = sel_registerName("iconImageWithInfo:traitCollection:options:");
+    Method m_img = class_getInstanceMethod(object_getClass(self), img_sel);
+    if (!m_img) return nil;
+    id (*img_fn)(id, SEL, SBIconImageInfo, id, unsigned long) =
+        (id (*)(id, SEL, SBIconImageInfo, id, unsigned long))method_getImplementation(m_img);
+    id image = img_fn(self, img_sel, info, tc, opts);
+    if (!image) return nil;
+    SEL cg_sel = sel_registerName("CGImage");
+    if (!class_getInstanceMethod(object_getClass(image), cg_sel)) return nil;
+    id cg_img = ((id (*)(id, SEL))objc_msgSend)(image, cg_sel);
+    if (!cg_img) return nil;
+
+    Class layer_cls = objc_getClass("CALayer");
+    if (!layer_cls) return nil;
+    /* An implicit CATransaction off the main thread asserts in QuartzCore. */
+    Class tx_cls = objc_getClass("CATransaction");
+    if (tx_cls) {
+        ((void (*)(Class, SEL))objc_msgSend)(tx_cls, sel_registerName("begin"));
+        ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx_cls, sel_registerName("setDisableActions:"), YES);
+    }
+    id new_layer = ((id (*)(Class, SEL))objc_msgSend)(layer_cls, sel_registerName("layer"));
+    if (new_layer) {
+        ((void (*)(id, SEL, id))objc_msgSend)(new_layer, sel_registerName("setContents:"), cg_img);
+        ((void (*)(id, SEL, id))objc_msgSend)(new_layer, sel_registerName("setContentsGravity:"),
+            (id)CFSTR("resizeAspect"));
+    }
+    if (tx_cls) ((void (*)(Class, SEL))objc_msgSend)(tx_cls, sel_registerName("commit"));
+    return new_layer;
+}
+
 static id
 sb26_calendar_icon_layer_fallback(id self, SEL _cmd, SBIconImageInfo info, id tc, unsigned long opts)
 {
-    id layer = NULL;
-    if (orig_calendar_layer) {
-        layer = orig_calendar_layer(self, _cmd, info, tc, opts);
+    id layer = orig_calendar_layer ? orig_calendar_layer(self, _cmd, info, tc, opts) : nil;
+    if (layer) return layer;
+    sb26_icon_fallback_calls++;
+    id wrapped = sb26_wrap_icon_image(self, info, tc, opts);
+    if (wrapped) {
+        sb26_icon_fallback_wrapped++;
+        return wrapped;
     }
-    if (layer != NULL) {
-        return layer;
-    }
+    sb26_icon_fallback_no_image++;
+    return nil;
+}
 
-    /*
-     * If native layer generation returns nil (due to missing ICRIconLayer in ISImage),
-     * call iconImageWithInfo:traitCollection:options: and wrap the resulting CGImage in a CALayer.
-     */
-    SEL img_sel = sel_registerName("iconImageWithInfo:traitCollection:options:");
-    Class self_cls = object_getClass(self);
-    Method m_img = self_cls ? class_getInstanceMethod(self_cls, img_sel) : NULL;
-    if (m_img) {
-        id (*img_fn)(id, SEL, SBIconImageInfo, id, unsigned long) =
-            (id (*)(id, SEL, SBIconImageInfo, id, unsigned long))method_getImplementation(m_img);
-        id image = img_fn(self, img_sel, info, tc, opts);
-        if (image != NULL) {
-            SEL cg_sel = sel_registerName("CGImage");
-            Class img_cls = object_getClass(image);
-            if (img_cls && class_getInstanceMethod(img_cls, cg_sel)) {
-                id cg_img = ((id (*)(id, SEL))objc_msgSend)(image, cg_sel);
-                if (cg_img != NULL) {
-                    Class layer_cls = objc_getClass("CALayer");
-                    if (layer_cls) {
-                        /*
-                         * Wrap CALayer creation and property modification with an explicit
-                         * CATransaction so CA_ASSERT_MAIN_THREAD_TRANSACTIONS assertion
-                         * (which aborts on implicit transactions on background threads) is avoided.
-                         */
-                        Class tx_cls = objc_getClass("CATransaction");
-                        if (tx_cls) {
-                            ((void (*)(Class, SEL))objc_msgSend)(tx_cls, sel_registerName("begin"));
-                            ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx_cls, sel_registerName("setDisableActions:"), YES);
-                        }
-                        id new_layer = ((id (*)(Class, SEL))objc_msgSend)(layer_cls, sel_registerName("layer"));
-                        if (new_layer != NULL) {
-                            ((void (*)(id, SEL, id))objc_msgSend)(new_layer, sel_registerName("setContents:"), cg_img);
-                        }
-                        if (tx_cls) {
-                            ((void (*)(Class, SEL))objc_msgSend)(tx_cls, sel_registerName("commit"));
-                        }
-                        return new_layer;
-                    }
-                }
-            }
-        }
-    }
-
+static IMP
+sb26_icon_orig_for(id self)
+{
+    for (Class c = object_getClass(self); c; c = class_getSuperclass(c))
+        for (unsigned i = 0; i < sb26_icon_orig_count; i++)
+            if (sb26_icon_origs[i].cls == c) return sb26_icon_origs[i].imp;
     return NULL;
+}
+
+static id
+sb26_generic_icon_layer(id self, SEL _cmd, SBIconImageInfo info, id tc, unsigned long opts)
+{
+    IMP orig = sb26_icon_orig_for(self);
+    id layer = orig
+        ? ((id (*)(id, SEL, SBIconImageInfo, id, unsigned long))orig)(self, _cmd, info, tc, opts)
+        : nil;
+    if (layer) {
+        SEL contents_sel = sel_registerName("contents");
+        if (!class_respondsToSelector(object_getClass(layer), contents_sel)) return layer;
+        if (((id (*)(id, SEL))objc_msgSend)(layer, contents_sel)) return layer;
+    }
+
+    sb26_icon_fallback_calls++;
+    id wrapped = sb26_wrap_icon_image(self, info, tc, opts);
+    if (wrapped) {
+        sb26_icon_fallback_wrapped++;
+        return wrapped;
+    }
+    sb26_icon_fallback_no_image++;
+    return layer;   /* keep whatever the original answered rather than making it worse */
+}
+
+/* Classes arrive lazily, so this is called once at constructor time and again a few times
+ * during the first minute; already-hooked classes are left alone. */
+void
+sb26_install_all_icon_layer_fallbacks(void)
+{
+    SEL layer_sel = sel_registerName("iconLayerWithInfo:traitCollection:options:");
+    Class calendar = objc_getClass("SBCalendarIconImageProvider");
+    Method cm = calendar ? class_getInstanceMethod(calendar, layer_sel) : NULL;
+    const char *want = cm ? method_getTypeEncoding(cm) : NULL;
+
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) return;
+    Class *classes = (Class *)calloc((size_t)n, sizeof(Class));
+    if (!classes) return;
+    n = objc_getClassList(classes, n);
+
+    unsigned added = 0;
+    for (int i = 0; i < n && sb26_icon_orig_count < SB26_ICON_MAX; i++) {
+        Class cls = classes[i];
+        if (!cls || cls == calendar) continue;   /* Calendar has its own hook */
+        unsigned mcount = 0;
+        Method *methods = class_copyMethodList(cls, &mcount);
+        Method own = NULL;
+        for (unsigned j = 0; j < mcount; j++)
+            if (sel_isEqual(method_getName(methods[j]), layer_sel)) { own = methods[j]; break; }
+        const char *enc = own ? method_getTypeEncoding(own) : NULL;
+        free(methods);
+        if (!own) continue;                       /* inherited: hooking the base is enough */
+        if (want && (!enc || strcmp(enc, want) != 0)) continue;
+        unsigned k;
+        for (k = 0; k < sb26_icon_orig_count; k++)
+            if (sb26_icon_origs[k].cls == cls) break;
+        if (k < sb26_icon_orig_count) continue;
+        IMP orig = method_getImplementation(own);
+        if (orig == (IMP)sb26_generic_icon_layer || orig == (IMP)sb26_calendar_icon_layer_fallback)
+            continue;
+        sb26_icon_origs[sb26_icon_orig_count].cls = cls;
+        sb26_icon_origs[sb26_icon_orig_count].imp = orig;
+        sb26_icon_orig_count++;
+        method_setImplementation(own, (IMP)sb26_generic_icon_layer);
+        added++;
+    }
+    free(classes);
+    sb26_icon_hooked = sb26_icon_orig_count;
+    fprintf(stderr, "sb26: icon layer fallbacks: +%u hooked, %u total, enc=%s\n",
+        added, sb26_icon_orig_count, want ? want : "unknown");
 }
 
 static void
