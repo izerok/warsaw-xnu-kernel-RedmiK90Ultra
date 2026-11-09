@@ -275,7 +275,10 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 		        "and reads the same bytes in each other's channels\n",
 		        (unsigned long)format, (unsigned long)_shape.pixel_format);
 	}
-	return self;
+	/* -newTextureView... owes the caller a +1. Returning an unretained self let
+	 * CoreAnimation's release destroy this texture's rwa_texture and froze every
+	 * layer drawn over that memory (v81: the lock screen would not go away). */
+	return [self retain];
 }
 
 /*
