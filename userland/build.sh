@@ -817,8 +817,8 @@ PY
 		printf 'on = %s\n' "${GLASS_ON:-1}"
 		printf 'icon_color = %s\n' "${GLASS_ICON_COLOR:-0.84}"
 		printf 'icon_white = %s\n' "${GLASS_ICON_WHITE:-0.30}"
-		printf '# icon_layer: whole SBIconImageView opacity (the reliable path)\n'
-		printf 'icon_layer = %s\n' "${GLASS_ICON_LAYER:-0.72}"
+		printf '# icon_layer is reserved; layer opacity < 1 hides icons on this driver\n'
+		printf 'icon_layer = %s\n' "${GLASS_ICON_LAYER:-1.0}"
 		# v90: group opacity < 1 makes the whole Dock vanish on this Metal
 		# driver (v89). Leave C off until the driver composites alpha; set these
 		# below 1.0 (or post com.redwood.icons) once it does.
