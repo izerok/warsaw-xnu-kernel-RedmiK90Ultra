@@ -817,9 +817,12 @@ PY
 		printf 'on = %s\n' "${GLASS_ON:-1}"
 		printf 'icon_color = %s\n' "${GLASS_ICON_COLOR:-0.84}"
 		printf 'icon_white = %s\n' "${GLASS_ICON_WHITE:-0.30}"
-		printf 'dock = %s\n' "${GLASS_DOCK:-0.55}"
-		printf 'search = %s\n' "${GLASS_SEARCH:-0.50}"
-		printf 'widget = %s\n' "${GLASS_WIDGET:-0.34}"
+		# v90: group opacity < 1 makes the whole Dock vanish on this Metal
+		# driver (v89). Leave C off until the driver composites alpha; set these
+		# below 1.0 (or post com.redwood.icons) once it does.
+		printf 'dock = %s\n' "${GLASS_DOCK:-1.0}"
+		printf 'search = %s\n' "${GLASS_SEARCH:-1.0}"
+		printf 'widget = %s\n' "${GLASS_WIDGET:-1.0}"
 	} > root/etc/glass.conf
 	# Metal's discovery is a whole rc of its own (RC=rc.metal), not a file this script tests:
 	# init runs root/etc/rc a line at a time, each line a command, so a shell `if` in it is a
