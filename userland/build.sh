@@ -234,7 +234,7 @@ if [ "$V" = 26 ]; then
 			/usr/bin/codesign --force --sign - --entitlements src/input26_service.entitlements obj/input26-service
 			/usr/bin/xcrun -sdk iphoneos clang -arch arm64e -miphoneos-version-min=26.0 \
 				-dynamiclib -install_name /redwood/lib/libredwood-sb26.dylib -Os -Wall -Wextra -Werror \
-				-framework CoreFoundation -framework Metal -lobjc -lMobileGestalt src/inject_sb26.c src/inject_sb26_layers.c src/inject_sb26_rate.c src/inject_posterboard.c -o obj/libredwood-sb26.dylib
+				-framework CoreFoundation -framework CoreGraphics -framework Metal -lobjc -lMobileGestalt src/inject_sb26.c src/inject_sb26_layers.c src/inject_sb26_rate.c src/inject_posterboard.c -o obj/libredwood-sb26.dylib
 			/usr/bin/codesign --force --sign - obj/libredwood-sb26.dylib
 			# Metal device registration in SpringBoard and backboardd, and the compression
 			# preference the driver needs set before QuartzCore picks a format: it imports
@@ -805,6 +805,22 @@ PY
 	fi
 	cp ${RC:-rc.launchd} root/etc/rc
 	cp ${RC_JOBS:-rc.jobs} root/etc/rc.jobs
+	# v89 clear-glass tuning, read by libredwood-sb26.dylib at runtime. Generated
+	# here rather than checked out, so the Windows host's core.autocrlf cannot
+	# put a CR into the values that sscanf parses. GLASS_* env vars retune a run
+	# without recompiling the injection library.
+	{
+		printf '# v89 clear-glass home screen (options A + C)\n'
+		printf '# icon_color / icon_white: alpha kept by saturated / pale pixels\n'
+		printf '# dock / search / widget: opacity of the corresponding glass groups\n'
+		printf '# on: 0 disables the whole glass pass\n'
+		printf 'on = %s\n' "${GLASS_ON:-1}"
+		printf 'icon_color = %s\n' "${GLASS_ICON_COLOR:-0.84}"
+		printf 'icon_white = %s\n' "${GLASS_ICON_WHITE:-0.30}"
+		printf 'dock = %s\n' "${GLASS_DOCK:-0.55}"
+		printf 'search = %s\n' "${GLASS_SEARCH:-0.50}"
+		printf 'widget = %s\n' "${GLASS_WIDGET:-0.34}"
+	} > root/etc/glass.conf
 	# Metal's discovery is a whole rc of its own (RC=rc.metal), not a file this script tests:
 	# init runs root/etc/rc a line at a time, each line a command, so a shell `if` in it is a
 	# command called "if" -- v47 printed "if: No such file or directory" and ran the line under
@@ -815,7 +831,7 @@ PY
 	# Normalize the generated files on every host and verify the bytes that enter APFS.
 	python3 - <<'PYTEXT'
 from pathlib import Path
-for name in ('root/etc/rc', 'root/etc/rc.jobs', 'root/etc/var.skel'):
+for name in ('root/etc/rc', 'root/etc/rc.jobs', 'root/etc/glass.conf', 'root/etc/var.skel'):
     path = Path(name)
     data = path.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n')
     path.write_bytes(data)
