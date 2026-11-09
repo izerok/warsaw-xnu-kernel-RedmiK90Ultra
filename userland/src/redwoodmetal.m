@@ -178,6 +178,31 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 	}
 	line[k++] = '\n';
 	(void)write(2, line, (size_t)k);
+	/* v74: name the FAULTING INSTRUCTION, not just the frames. backtrace() begins at this
+	 * handler's caller, so the one address that is certainly the trap (si_addr on a
+	 * SIGTRAP/SIGILL) was the only one the line above never named -- and it is the address
+	 * that repeats across processes. Apple's own binary and ours are told apart by the
+	 * module name dladdr answers here. */
+	k = snprintf(line, sizeof(line), "rwm FAULT:");
+	if (info != NULL && info->si_addr != NULL) {
+		Dl_info where;
+
+		if (dladdr(info->si_addr, &where) && where.dli_fname != NULL) {
+			const char *file = strrchr(where.dli_fname, '/');
+
+			file = file ? file + 1 : where.dli_fname;
+			k += snprintf(line + k, sizeof(line) - (size_t)k, " %p %s+0x%lx",
+			    info->si_addr, file,
+			    (unsigned long)((uintptr_t)info->si_addr - (uintptr_t)where.dli_fbase));
+		} else {
+			k += snprintf(line + k, sizeof(line) - (size_t)k, " %p (no image: not code)",
+			    info->si_addr);
+		}
+	} else {
+		k += snprintf(line + k, sizeof(line) - (size_t)k, " none");
+	}
+	line[k++] = '\n';
+	(void)write(2, line, (size_t)k);
 	signal(number, SIG_DFL);
 	raise(number);
 }
