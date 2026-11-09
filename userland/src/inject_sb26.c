@@ -1398,6 +1398,14 @@ sb26_glass_apply(id layer, int kind, const char *cls, sb26_rect b)
     else if (kind == 2) { opacity = glass_search; radius = b.h * 0.5; tag = "search"; }
     else { opacity = glass_widget; radius = b.w * 0.17; tag = "widget"; }
 
+    /* v90: on this Metal driver a group opacity below 1 makes the ENTIRE Dock
+     * (including its four icons) disappear -- v89 measured 74.7% of the dock
+     * band changing, all of it turning into bare wallpaper. Do not touch a
+     * glass group at all until the driver composites layer alpha correctly.
+     * glass.conf keeps the switches so a fixed driver can enable C without a
+     * recompile; 1.0 means "leave the layer exactly as SpringBoard made it". */
+    if (opacity >= 0.99f) return;
+
     if (tx) {
         ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("begin"));
         ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx,
