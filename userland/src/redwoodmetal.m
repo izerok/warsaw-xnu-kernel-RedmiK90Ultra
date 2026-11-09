@@ -104,12 +104,57 @@
 #include <dispatch/dispatch.h>   /* rw_stitch_install_hooks' dispatch_once */
 
 #include "redwood_drawable.h"
+#include <execinfo.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+
+/* ---------------------------------------------------------------------------------------
+ * v68: iconservicesagent renders icons through this driver and then dies, generation after
+ * generation (pid 60, 84, 88, 99 in one boot), with NOTHING on stderr: no abort, no libc++
+ * message, no exception. Its death strands SpringBoard's synchronous com.apple.iconservices
+ * requests, which is the tap-an-icon freeze. The logger that was added to the SpringBoard
+ * dylib could never see it — that library is not loaded in the agent; THIS one is, in every
+ * process that touches Metal. Print a backtrace on the fatal signals here so the crash site
+ * finally reaches the serial log.
+ * --------------------------------------------------------------------------------------- */
+static void
+rwm_crash_logger(int number, siginfo_t *info, void *context)
+{
+	void *frames[32];
+	char line[1100];
+	int n = backtrace(frames, 32), k;
+
+	(void)context;
+	k = snprintf(line, sizeof(line), "rwm CRASH: %s %d: SIGNAL %d at %p, the stack:",
+	    getprogname() ? getprogname() : "?", getpid(), number, info ? info->si_addr : NULL);
+	for (int i = 0; i < n && k < (int)sizeof(line) - 24; i++) {
+		k += snprintf(line + k, sizeof(line) - (size_t)k, " %p", frames[i]);
+	}
+	line[k++] = '\n';
+	(void)write(2, line, (size_t)k);
+	signal(number, SIG_DFL);
+	raise(number);
+}
+
+__attribute__((constructor))
+static void
+rwm_install_crash_logger(void)
+{
+	static const int signals[] = { SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGTRAP };
+	struct sigaction action = { 0 };
+
+	action.sa_sigaction = rwm_crash_logger;
+	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESETHAND;
+	sigemptyset(&action.sa_mask);
+	for (unsigned i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+		sigaction(signals[i], &action, NULL);
+	}
+}
 
 /* The contract with Mesa's side, copied here rather than included: this file is built by
  * userland/build.sh, which knows nothing of Mesa's tree, and the declarations are few.

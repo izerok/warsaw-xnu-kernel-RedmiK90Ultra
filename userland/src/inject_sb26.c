@@ -777,6 +777,8 @@ sb26_install_crash_logger(void)
  * v67 therefore caches every real iconservices reply keyed by the request's "root"
  * blob; on timeout the cached reply is replayed, and if the cache is cold an empty
  * dictionary is returned. Nothing ever returns NULL.
+ * v68 keeps the reply the async API itself hands back for a dead peer — an
+ * XPC_TYPE_ERROR object — instead of filtering it down to NULL (v67 died on that).
  * --------------------------------------------------------------------------------------- */
 #define SB26_XPC_CACHE_MAX 64
 static struct { char key[72]; xpc_object_t reply; } sb26_xpc_cache[SB26_XPC_CACHE_MAX];
@@ -870,10 +872,14 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         xpc_connection_send_message_with_reply(connection, message,
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
             ^(xpc_object_t rep) {
-                /* The sync API also hands back XPC_TYPE_ERROR dicts on a dead peer;
-                 * only a real dictionary is useful, so keep just that. The array
-                 * "key" must stay out of the block (clang rejects capturing one). */
-                if (rep && xpc_get_type(rep) == XPC_TYPE_DICTIONARY) {
+                /* v68: an XPC_TYPE_ERROR reply is exactly what the sync API returns
+                 * when the peer dies mid-call. v67 kept only dictionaries, so that
+                 * error became NULL and NSXPCConnection aborted SpringBoard ("root
+                 * object is not an XPC dictionary", 12 times in one boot). Keep every
+                 * non-NULL reply, errors included; the cache still stores dictionaries
+                 * only. The array "key" must stay out of the block (clang rejects
+                 * capturing one). */
+                if (rep) {
                     async_reply = xpc_retain(rep);
                 }
                 dispatch_semaphore_signal(done);
