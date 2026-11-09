@@ -35,6 +35,14 @@ static struct {
 	int (*dispatch_buffers)(struct rwa_compute *, const struct rwa_bindings *,
 				const struct rwa_buffer_bind *, unsigned, const unsigned[3],
 				const unsigned[3], char *, size_t);
+	/* rwa_dispatch_buffers plus the length Metal's -setThreadgroupMemoryLength:atIndex:
+	 * gave for threadgroup buffer 0. Looked up but not required: a library without it
+	 * predates the call, and a kernel that needs the length is refused by name at the
+	 * dispatch, out loud, instead of being run with nothing. */
+	int (*dispatch_threadgroup)(struct rwa_compute *, const struct rwa_bindings *,
+				    const struct rwa_buffer_bind *, unsigned,
+				    const unsigned[3], const unsigned[3], unsigned,
+				    char *, size_t);
 	int (*module_argbufs)(struct rwa_device *, const void *, size_t, const char *,
 			      struct rwa_argbuf_layout *, unsigned, unsigned *, char *,
 			      size_t);
@@ -111,6 +119,7 @@ mesa_available(void)
 	 * to load. What must not happen is answering an encoder and then binding nothing,
 	 * so -newArgumentEncoder... checks for these before it makes one. */
 	*(void **)&mesa.dispatch_buffers = dlsym(mesa.handle, "rwa_dispatch_buffers");
+	*(void **)&mesa.dispatch_threadgroup = dlsym(mesa.handle, "rwa_dispatch_threadgroup");
 	*(void **)&mesa.module_argbufs = dlsym(mesa.handle, "rwa_module_argbufs");
 	*(void **)&mesa.argbuf_encode_buffer = dlsym(mesa.handle, "rwa_argbuf_encode_buffer");
 	*(void **)&mesa.argbuf_encode_texture = dlsym(mesa.handle, "rwa_argbuf_encode_texture");
