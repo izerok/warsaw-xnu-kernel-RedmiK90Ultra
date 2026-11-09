@@ -147,8 +147,20 @@ jobs:
           done
 
           # Ours, kept in the repository, always the current ones.
-          rm -rf "mesa-$MESA_VERSION/src/redwood-drm" "mesa-$MESA_VERSION/src/compiler/air"
-          cp -r /tmp/u/tools/mesa/redwood-drm "mesa-$MESA_VERSION/src/redwood-drm"
+          # Upstream renamed its DRM shim redwood-drm -> annibale-drm, and the
+          # tree path with it (src/annibale-drm, per its own mk-mesa.sh). The
+          # old name no longer exists under /tmp/u, and cp -r of it killed
+          # this step in the fork's first run (2026-11-09, run 42624419623).
+          # Accept either name so the next rename is a log line, not a failure.
+          rm -rf "mesa-$MESA_VERSION/src/redwood-drm" "mesa-$MESA_VERSION/src/annibale-drm" \
+                 "mesa-$MESA_VERSION/src/compiler/air"
+          if [ -d /tmp/u/tools/mesa/annibale-drm ]; then
+            cp -r /tmp/u/tools/mesa/annibale-drm "mesa-$MESA_VERSION/src/annibale-drm"
+            echo "--- drm shim: annibale-drm -> src/annibale-drm ($(ls "mesa-$MESA_VERSION/src/annibale-drm" | wc -l) entries) ---"
+          else
+            cp -r /tmp/u/tools/mesa/redwood-drm "mesa-$MESA_VERSION/src/redwood-drm"
+            echo "--- drm shim: redwood-drm -> src/redwood-drm ($(ls "mesa-$MESA_VERSION/src/redwood-drm" | wc -l) entries) ---"
+          fi
           cp -r /tmp/u/tools/mesa/air "mesa-$MESA_VERSION/src/compiler/air"
           echo "--- air frontend in tree: $(ls "mesa-$MESA_VERSION/src/compiler/air" | wc -l) entries ---"
 
