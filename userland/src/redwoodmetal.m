@@ -3807,14 +3807,13 @@ enum {
 			 * A clear whose target has no IOSurface is an offscreen layer, so
 			 * make it genuinely transparent. This is what restores the glass.
 			 */
-			/* v91: v85 only matched pure black (0,0,0,1), and the device log
-			 * showed that clear firing exactly once while the Dock still came
-			 * out as flat (45,45,45). Any opaque clear of an offscreen LAYER
-			 * texture is wrong: those textures are composited BY ALPHA, so the
-			 * glass backdrop subsequently samples an opaque surface instead of
-			 * the wallpaper. Drop the RGB restriction, keep the alpha test. */
+			/* v91 tried dropping the RGB restriction (any opaque clear of an
+			 * offscreen layer). On the phone that made every PNG-backed home
+			 * icon disappear, so the v85 pure-black test is kept. The real fix
+			 * belongs in the driver's alpha compositing path, not here. */
 			if ([texture respondsToSelector:@selector(iosurface)] &&
 			    [texture iosurface] == NULL &&
+			    c.red == 0.0 && c.green == 0.0 && c.blue == 0.0 &&
 			    c.alpha == 1.0) {
 				_clearColor[3] = 0.0f;
 				RW_ONCE("v85: offscreen clear (0,0,0,1) made transparent so "
