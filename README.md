@@ -1,5 +1,9 @@
 # warsaw-xnu-kernel — Redmi K90 至尊版 / iOS 26 真机移植
 
+> **维护者留言（2026-11-09）：我没空修系统了，让大家继续摸索适配。**
+> 当前状态、每轮真机结论与未解问题都写在 [docs/STATUS-2026-11-09.md](docs/STATUS-2026-11-09.md)，
+> 欢迎同机型开发者接着往下做；提交请保持只放源码与文档，别把系统镜像传上来。
+
 XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB）上的移植记录。
 路线照搬上游 [iola1999/hackios-redmi-k90-annibale](https://github.com/iola1999/hackios-redmi-k90-annibale)（同 SoC、同 DTB，仅面板 1280×2772 与 annibale 的 1156×2510 不同），
 本仓库只收源码、文档、取证脚本与上屏截图；**Apple 系统内容、IPSW、厂商固件一律不上传**。
@@ -8,20 +12,33 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 > [@wannqn](https://t.me/wannqn) / [@hxfuxyyXD](https://t.me/hxfuxyyXD)，动态见 [t.me/oosexgangdevs](https://t.me/oosexgangdevs)。
 > 本仓库是同机型开发者的本地工作分支，没有上游授权，不是上游官方仓库。
 
-## 当前进展（v37，2026-11-07）
+## 当前进展（v92，2026-11-09）
 
-**iOS 26 锁屏已上屏且时钟在前进。** 这是 V35 → V37 三轮迭代的结果：
+**iOS 26 主屏桌面可交互，图标样式已定稿。** launchd 全部 boot task 通过、原生
+1280×2772 1:1 渲染、23 个图标全部可见、文件夹可打开、点 App 能启动，
+设置 / 控制中心 / WiFi / Home 上滑手势均正常。当前真机跑的是 `payload-v92.bin`。
 
-| 版本 | 启动时间 | 状态 |
-|---|---|---|
-| v35 | 320 s（自设 `loader_return_after=320` 到期停机） | ✅ SpringBoard 上屏 / WebKit 报错页 / 触摸响应 / 卡顿 |
-| v36 | 0 s（载荷格式错） | ❌ 核心未起，秒回 Android |
-| v37 | 仍在运行 | ✅ **iOS 26 锁屏**（StandBy 风格粉色大数字时钟 / `向上轻扫以打开`），时钟从 00:05 推进到 00:07 |
+| 载荷 | 状态 |
+|---|---|
+| `payload-v86.bin` | ✅ **已完整验证的基线**（主屏逐像素基线 `once-v86b`，18:23 复跑一致 0.29%） |
+| `payload-v89.bin` | ⚠️ A+C 试验：逐像素 alpha 被忽略、Dock group opacity 整层消失 |
+| `payload-v91.bin` | ❌ layer opacity 试验：除时钟外图标全消失，勿用 |
+| `payload-v92.bin` | ✅ v86 + 图标 squircle 圆角（C 开关全关），与 v86 主屏仅 1.55% 像素差异，**当前在用** |
 
-锁屏截图见 `docs/v37/lock-00-07.png`。SpringBoard pid 132，wifid[34]、backboardd[209]、
-runningboardd[30]、containermanagerd[38]、usermanagerd[44] 都起来了。
+v92 的圆角裁剪顺带去掉了 v86 图标上那条固定的白色弧形高光和四边浅色镶边，
+「图标边缘贴纸感」明显减轻，维护者对图标样式满意。该轮有 1 次
+`rwm CRASH: SpringBoard 32: SIGNAL 5`（自动重拉后桌面与后续日志正常，v86 为 0 次），
+**建议再跑一轮确认是否偶发，再决定是否把 v92 定成新基线**。
 
-锁屏实际时间 `00:07` ≈ 启动后 7 分钟，与现实一致，证明内核在持续运行。
+**今天新增的未解问题**：点开任意图标会闪一下红色，随后启动动画掉帧卡顿。
+实时日志取证：tap 后帧空窗 50–109 ms、稳定帧间隔约 50 ms（≈20 fps）、
+`com.apple.iconservices` 同步调用 30 次撞 300 ms 冷超时。
+红色是毫秒级渲染瞬态，`oem screenshot` 单次 0.43 s 抓不到；
+帧缓冲物理地址 `0xfc800000`，下一步可用 `oem stage <ADDR> <HEXLEN>` 只读一行做高频采样。
+连拍工具已放 `docs/tools/tap-burst.py`。
+
+完整进度、v83–v92 每轮结论、透明玻璃为何没做成、遗留项与下一步，
+见 **[docs/STATUS-2026-11-09.md](docs/STATUS-2026-11-09.md)**。
 
 ## 启动参数（v37，真机实测可进入锁屏）
 
@@ -48,6 +65,23 @@ applog=2
 - **`epoch=<unix-time>`**：不可省略，否则内核时钟错乱（clock 服务不工作）。
 - **不能带 `loader_return_after=N`**：那是取证参数，会到期停机。
 
+### v86 起必须追加的面板参数
+
+```
+fbwidth=1280 fbheight=2772 fbpitch=460
+```
+
+不带时内核按 `1125x2436` 逻辑分辨率渲染，再由 `MiniFramebufferScale.h` 的
+`mixRows()` 做 CPU 双线性缩放到面板，半透明边缘被插值混色 —— 这是主屏图标边缘
+发虚、「贴纸感」的一部分来源。带上之后日志为
+`display 1280x2772 on a panel of 1280x2772`，零插值。
+下面「warsaw 适配的具体差异」里早期写的「DTB 里写好了、cmdline 不用带」，
+**v86 实测是错的，以此处为准**。
+
+v92 生产 cmdline 其余关键项：`applog=0 autounlock=1 wifi=1 bt=4 pcie=10`、
+`metal=1 metal_profile=1 fb_hz=120 fb_ca_hz=120 touch_poll_us=4000`；
+取证轮仍必须带 `bootcpu=7 cpus=7`。
+
 ## 上机一次的完整步骤
 
 工具脚本见 `docs/tools/`。事先准备好的产物（都不上传到本仓库）：
@@ -73,7 +107,7 @@ ADB_DIR=/path/to/platform-tools OBSERVE=600 SHOTS="90 240 420 570" OUTDIR=$PWD/o
 
 ## warsaw 适配的具体差异（相对 annibale）
 
-- 面板：1280×2772（annibale 是 1156×2510）。`fbwidth`/`fbheight` 不能照抄，warsaw DTB 里是写好的（`common/devices/warsaw.dtb`），不需要在 cmdline 里再带。
+- 面板：1280×2772（annibale 是 1156×2510）。`fbwidth`/`fbheight` **不能照抄 annibale 的 1156×2510**；早期文档说「warsaw DTB 里写好了、cmdline 不用带」，v86 实测是错的 —— 不带会走 CPU 缩放并让半透明边缘混色，必须带 `fbwidth=1280 fbheight=2772 fbpitch=460`（见上一节）。
 - DTB 与上游 annibale **实测完全一致**（除了面板 / 背光时序），其余适配（USB、UFS、PMIC、ADSP、goodix、Adreno、BQ27Z561 等）都是同款 SoC 自带的。
 - `device` 配置：`common/devices/warsaw.conf`。UEFI 加 `-DWARSAW`、loader 加 `-DDIRECT_PHONE_PLAT`。
 - GPT 无 darwin 分区：warsaw 的 GPT 只有 stock Android（super 241664..3518463、userdata 3518464..64041978，LBA=4096B），所以 `loader_panic_sync_ufs` 落盘通道用不了，日志只能靠 loader（`bootcpu=7`）拿。
@@ -88,6 +122,11 @@ ADB_DIR=/path/to/platform-tools OBSERVE=600 SHOTS="90 240 420 570" OUTDIR=$PWD/o
 - v34 实锤 `launchd.ios[1] kill(0xfffffec9, 0xf)` 死循环根因：`system.manifest` CRLF 污染让所有顶层符号链接目标带 `\r`，`/etc/master.passwd` 打不开 → 所有 job ENOENT 秒退。修复：mkapfs 剥 `\r` + manifest 全文转 LF + 重建系统盘。
 - v35 SpringBoard[211] 首次真正上屏（状态栏 / WebKit 报错页 / home 指示条）。
 - v37   iOS 26 **锁屏**跑出来，时钟在前进。
+- v77   `iconservicesagent` 强制 CPU 渲染：GPU 路径 `IconRendering.HardwareTexture` 的 weak 引用为 nil，Swift 强解包 SIGTRAP（v87 再试仍崩，CPU fallback 必须保留）。
+- v82   SpringBoard 同步 XPC 加 300 ms 冷超时 + 真实 reply 缓存，修掉「点图标卡死」；`sb26_xpc_cache_any()` 兜底避免 NULL reply 让 NSXPCConnection  abort。
+- v84   `SYSTEM=1` 全量重建系统盘（38 jobs）+ 死服务按名记忆化短路（`DEADCACHE`）；只改小根盘的 `launchd.plist` 无效。
+- v86   原生 1:1 分辨率（`fbwidth/fbheight/fbpitch`），去掉 CPU 缩放，设置 App 渲染正常。
+- v89–v92  透明图标 / 玻璃 Dock（A+C）三轮试验：结论是驱动层 alpha 合成不支持，已回退，详见 `docs/STATUS-2026-11-09.md`。
 
 ## 重要陷阱（同机型请注意）
 
@@ -97,11 +136,14 @@ ADB_DIR=/path/to/platform-tools OBSERVE=600 SHOTS="90 240 420 570" OUTDIR=$PWD/o
 - **`adreno8=N` = 执行前 N 个上电阶段**（共 23 个）。0 = 完全不碰 GPU。
 - **取证必须带 `bootcpu=7 cpus=7`**：loader 留在核 0 监视，fastboot/`oem log` 全程可用；没它内核运行期间 loader 整体灭活。
 - **`oem stage ADDR LEN`** 两者都是裸十六进制，传十进制会被当 hex 解析超窗失败。
-- **手写 launchd job 缓存**：iOS 26 的 launchd 不扫目录，只用 `mkcache.py` 产生的 `/System/Library/xpc/launchd.plist`。要补 `com.apple.sleepd` 等服务，必须进这个缓存，否则 SpringBoard 会因为找不到服务死循环重连。
+- **手写 launchd job 缓存**：iOS 26 的 launchd 不扫目录，只用 `mkcache.py` 产生的 `/System/Library/xpc/launchd.plist`。要补 `com.apple.sleepd` 等服务，必须进这个缓存，否则 SpringBoard 会因为找不到服务死循环重连。**这份缓存以系统盘内那份为准**，改小根盘 `root/xpc/launchd.plist` 不生效。
+- **SpringBoard 注入层做不了半透明**：当前驱动上 `CALayer.opacity < 1` 会丢内容、CGImage 逐像素 alpha 被 QuartzCore 反预乘忽略、group opacity 让整层消失。透明图标 / 玻璃 Dock 必须走驱动层 alpha 合成（上游 `0006-a830-no-fs-tex-prefetch`、`0016-nir-lower-fb-read-zero-layer` + 原生图标路径），不要在 `inject_sb26.c` 里模拟。
+- **对比跨轮截图要挑对帧**：`once-v86b/snaps/screen-final.png` 是设置 App 不是主屏；主屏基线用 `screen-105.png`。另外要避开背光瞬态暗帧（v86restore 的 `screen-105`、v92 的 `screen-70` 都是），它们和主屏差 90%+ 但不是回归。
+- **`oem stop` 后 framebuffer 不清屏**：loader 停内核后屏幕会一直冻结在最后一帧（曾误以为桌面还活着）。要恢复必须重新 `fastboot boot`；`reboot bootloader` 后设备常先回 Android，取证脚本会自动 `adb reboot bootloader`。
 
 ## 默认分支
 
-`main`。所有提交在 `main` 上线性前进。tags 标记关键版本：`v35`（首次上屏）、`v37`（锁屏前进）。
+`main`。所有提交在 `main` 上线性前进。tags 标记关键版本：`v35`（首次上屏）、`v37`（锁屏前进）、`v86`（原生分辨率基线）、`v92`（图标样式定稿）。
 
 ## 许可证
 
