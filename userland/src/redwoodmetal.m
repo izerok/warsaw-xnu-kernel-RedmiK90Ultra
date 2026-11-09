@@ -123,6 +123,17 @@
  * process that touches Metal. Print a backtrace on the fatal signals here so the crash site
  * finally reaches the serial log.
  * --------------------------------------------------------------------------------------- */
+/* v72: what this process last asked Metal to do, for the crash logger above. */
+#define RWM_TRACE_MAX 24
+static const char *rwm_trace[RWM_TRACE_MAX];
+static unsigned rwm_trace_pos;
+
+static void
+rwm_note(const char *what)
+{
+	rwm_trace[__atomic_fetch_add(&rwm_trace_pos, 1, __ATOMIC_RELAXED) % RWM_TRACE_MAX] = what;
+}
+
 static void
 rwm_crash_logger(int number, siginfo_t *info, void *context)
 {
@@ -135,6 +146,17 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 	    getprogname() ? getprogname() : "?", getpid(), number, info ? info->si_addr : NULL);
 	for (int i = 0; i < n && k < (int)sizeof(line) - 24; i++) {
 		k += snprintf(line + k, sizeof(line) - (size_t)k, " %p", frames[i]);
+	}
+	line[k++] = '\n';
+	(void)write(2, line, (size_t)k);
+	/* v72: the last Metal calls this process made, oldest first. The agent dies with
+	 * SIGTRAP (5) at one fixed address, which is Apple's own trap, so the API it was
+	 * in when the trap fired is the thing to look at. */
+	k = snprintf(line, sizeof(line), "rwm LAST:");
+	for (unsigned i = 0; i < RWM_TRACE_MAX; i++) {
+		const char *what = rwm_trace[(rwm_trace_pos + i) % RWM_TRACE_MAX];
+		if (what && k < (int)sizeof(line) - 40)
+			k += snprintf(line + k, sizeof(line) - (size_t)k, " %s", what);
 	}
 	line[k++] = '\n';
 	(void)write(2, line, (size_t)k);
@@ -1907,6 +1929,7 @@ struct gem_close { uint32_t handle, pad; };
 {
 	char why[256] = { 0 };
 
+	rwm_note("newtex");
 	if (_mesa == NULL) {
 		rw_print("a texture needs the compiler library\n");
 		return nil;
@@ -3682,7 +3705,7 @@ enum {
 
 - (id)device { return [_commandBuffer device]; }
 
-- (void)setRenderPipelineState:(id)state { _pipeline = state; }
+- (void)setRenderPipelineState:(id)state { rwm_note("pipeline"); _pipeline = state; }
 
 /*
  * One table, two meanings, and the offset is no longer thrown away.
@@ -3757,6 +3780,7 @@ enum {
 
 - (void)setFragmentTexture:(id)texture atIndex:(NSUInteger)index
 {
+	rwm_note("ftex");
 	if (index >= RW_MAX_BUFFERS) {
 		return;
 	}
@@ -3848,7 +3872,10 @@ enum {
      instanceCount:(NSUInteger)instances
       baseInstance:(NSUInteger)baseInstance
 {
-	RedwoodMetalWork *work = [[RedwoodMetalWork alloc] init];
+	RedwoodMetalWork *work;
+
+	rwm_note("draw");
+	work = [[RedwoodMetalWork alloc] init];
 
 	if (_pipeline == nil || (_colorCount == 0 && _depth == nil)) {
 		rw_print("this draw has %s and is dropped\n",

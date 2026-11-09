@@ -488,6 +488,7 @@ rw_work_time(int kind, uint64_t began)
 	char why[512] = { 0 };
 	uint64_t started = mach_absolute_time();
 
+	rwm_note("commit");
 	__atomic_add_fetch(&hb_commit, 1, __ATOMIC_RELAXED);
 
 	if (commit_started != 0) {
