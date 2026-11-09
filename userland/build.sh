@@ -144,6 +144,15 @@ if [ "$V" = 26 ] && [ "${JOBS+x}" != x ]; then
 	IOS_JOBS="$IOS_JOBS com.apple.systemstatusd"
 	# Font registration daemon for WebKit / Safari and YouTube custom fonts
 	IOS_JOBS="$IOS_JOBS com.apple.fontservicesd"
+	# v83: on every icon tap SpringBoard sends synchronous XPC to
+	# com.apple.appprotectiond.read (32 times in the Health tap of v82) and
+	# com.apple.splashboard.launchimage. Neither job is in the trimmed cache, so launchd
+	# has no port for either and hands back the same XPC error singleton for every
+	# request; those lookups are what cost the ~122 ms frame gap after a tap. The two
+	# programs are already in the system image (/usr/libexec/appprotectiond,
+	# /usr/libexec/splashboardd) -- only the job plists and the cache entries were
+	# missing. Upstream's v0.1.1 local-files.plist registers both too.
+	IOS_JOBS="$IOS_JOBS com.apple.appprotectiond com.apple.splashboardd"
 fi
 # iOS's own Wi-Fi daemon, for Settings to have a Wi-Fi to show: the kernel answers it in
 # bsd/dev/redwood_apple80211.c. With the radio (wifi=1) Settings then shows Wi-Fi on, the network joined and the
