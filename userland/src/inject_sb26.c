@@ -874,14 +874,28 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
      * death strands every in-flight xpc_connection_send_message_with_reply_sync
      * FOREVER (the tap-an-icon freeze). The original call has no timeout, so for
      * iconservices only, the same reply is awaited through the async API under a
-     * dispatch semaphore with a 4 s cap; on timeout a NULL reply is returned, the
-     * same shape as a peer that answered with nothing. Every other service keeps
-     * the plain synchronous call. */
+     * dispatch semaphore; every other service keeps the plain synchronous call.
+     *
+     * v70: the 4 s cap itself killed SpringBoard. v69's log shows dozens of its
+     * threads in "semaphore_timedwait_trap -> sb26_hook_xpc_sync" and backboardd's
+     * system-shell watchdog firing on the shell: with the agent dead, every icon
+     * request cost a full 4 s and the main thread never answered. So: a request
+     * whose key is already cached returns at once (a tap re-asks for icons it
+     * already drew), and a cold one waits 300 ms — a live agent answers in tens of
+     * milliseconds, and no UI thread is ever held longer than a few frames. */
     if (is_icons) {
         char key[72];
         sb26_xpc_cache_key(message, key, sizeof(key));
+        xpc_object_t hit = sb26_xpc_cache_get(key);
         __block xpc_object_t async_reply = NULL;
-        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        dispatch_semaphore_t done = NULL;
+
+        if (hit) {
+            reply = xpc_retain(hit);
+            fprintf(stderr, "sb26 xpc sync #%u CACHEHIT name=%s key=%.24s\n", n, name, key);
+            goto done_icons;
+        }
+        done = dispatch_semaphore_create(0);
         xpc_connection_send_message_with_reply(connection, message,
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
             ^(xpc_object_t rep) {
@@ -898,7 +912,7 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
                 dispatch_semaphore_signal(done);
             });
         if (dispatch_semaphore_wait(done,
-                dispatch_time(DISPATCH_TIME_NOW, 4LL * NSEC_PER_SEC)) == 0) {
+                dispatch_time(DISPATCH_TIME_NOW, 300LL * NSEC_PER_MSEC)) == 0) {
             reply = async_reply;
             if (reply) {
                 sb26_xpc_cache_put(key, reply);
@@ -923,6 +937,8 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
                 n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY);
         }
         if (done) dispatch_release(done);
+done_icons:
+        ;
     } else {
         sb26_xpc_depth++;
         reply = xpc_connection_send_message_with_reply_sync(connection, message);
