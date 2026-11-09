@@ -1211,6 +1211,7 @@ typedef struct { double x, y, w, h; } sb26_rect;
 
 static float glass_icon_color = 0.84f;
 static float glass_icon_white = 0.30f;
+static float glass_icon_layer = 0.72f;
 static float glass_dock       = 0.55f;
 static float glass_search     = 0.50f;
 static float glass_widget     = 0.34f;
@@ -1236,6 +1237,7 @@ sb26_glass_conf(void)
         if (sscanf(line, " %63[^= \t] = %f", key, &value) != 2) continue;
         if (!strcmp(key, "icon_color")) glass_icon_color = value;
         else if (!strcmp(key, "icon_white")) glass_icon_white = value;
+        else if (!strcmp(key, "icon_layer")) glass_icon_layer = value;
         else if (!strcmp(key, "dock")) glass_dock = value;
         else if (!strcmp(key, "search")) glass_search = value;
         else if (!strcmp(key, "widget")) glass_widget = value;
@@ -1629,6 +1631,13 @@ sb26_fill_one_icon(id view)
     ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"),
         sb26_glass_image(root, cg));
     ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
+    /* v91: QuartzCore un-premultiplies the baked bitmap and drops its per-pixel
+     * alpha (v89 measured the white icon interiors byte-for-byte unchanged),
+     * while the transparent squircle corners DO reach the wallpaper. A plain
+     * layer opacity is a single, driver-visible value and needs no group
+     * compositing -- SBIconImageView is a leaf layer, unlike SBDockView. */
+    if (glass_on && glass_icon_layer > 0.0f && glass_icon_layer < 0.99f)
+        sb26_glass_setf(layer, "setOpacity:", glass_icon_layer);
     if (tx) ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("commit"));
 }
 
