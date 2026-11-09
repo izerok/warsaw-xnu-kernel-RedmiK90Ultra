@@ -1387,6 +1387,20 @@ struct gem_close { uint32_t handle, pad; };
 
 @implementation RedwoodMetalDevice
 
+/* v77: the one process this driver stands down for, and why, is written at
+ * -initWithAcceleratorPort: below. */
+static int
+checkenv_or_name(void)
+{
+	const char *name = getprogname();
+
+	if (name == NULL || strcmp(name, "iconservicesagent") != 0)
+		return 0;
+	rw_print("v77: this process draws on the CPU; IconRendering's HardwareTexture asserts "
+	         "on a cleared weak reference (REDWOOD_AGENT_GPU=1 keeps the GPU path)\n");
+	return 1;
+}
+
 + (void)load
 {
 	ensure_spi(self);
@@ -1409,6 +1423,23 @@ struct gem_close { uint32_t handle, pad; };
 - (instancetype)initWithAcceleratorPort:(io_service_t)port
 {
 	ensure_spi([self class]);
+	/* v77, an experiment with one question: can the icon agent draw on the CPU?
+	 *
+	 * v74-v76 found where it dies. IconRendering (iOS 26's Swift icon pipeline) wraps a
+	 * GPU texture in `IconRendering.HardwareTexture`, keeps the thing that owns it as a
+	 * weak reference at +0x60, and when TextureIO calls back it loads that reference,
+	 * gets nil, and breaks with `brk #1` -- four times a boot, always the same class and
+	 * the same isa. What it draws before dying is the blurred, wrong-scale artwork on the
+	 * screen, so the GPU path is both the crash and the visible defect.
+	 *
+	 * A device that answers nil here is a Metal device the framework does not have, and
+	 * IconRendering is written to draw without one (the same branch that a phone with no
+	 * Metal support takes). That is the entire experiment: agent on the CPU, SpringBoard
+	 * and everything else still on this driver. REDWOOD_AGENT_GPU=1 keeps the old path
+	 * for the round that compares them.
+	 */
+	if (getenv("REDWOOD_AGENT_GPU") == NULL && checkenv_or_name())
+		return nil;
 	/* _MTLLibrary sends the specializations it cannot make in process to
 	 * MTLCompilerService, which is not alive here.  The hook answers them with a
 	 * proxy over the unspecialized function instead. */
