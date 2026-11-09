@@ -597,13 +597,24 @@ rw_work_time(int kind, uint64_t began)
 		 * Metal's offsets passed as well; a library too old to have it is used
 		 * through rwa_dispatch, and then a kernel with a set is refused by name
 		 * there and every offset is read as zero -- which is what an older library
-		 * did with one in any case, out loud. */
-		int rc = mesa.dispatch_buffers != NULL
-			    ? mesa.dispatch_buffers([work->pipeline compute], &bindings,
-						    table, work->count, work->groups,
-						    work->size, why, sizeof(why))
-			    : mesa.dispatch([work->pipeline compute], &bindings, work->groups,
-					    work->size, why, sizeof(why));
+		 * did with one in any case, out loud. rwa_dispatch_threadgroup is preferred
+		 * over both when the library has it: for a kernel without a threadgroup
+		 * buffer the length is ignored, and one that declares it is refused at zero
+		 * rather than dispatched with nothing, which failed the whole command
+		 * buffer before the length was carried (v78, compute_average_luma). */
+		int rc;
+		if (mesa.dispatch_threadgroup != NULL) {
+			rc = mesa.dispatch_threadgroup([work->pipeline compute], &bindings,
+			    table, work->count, work->groups, work->size,
+			    work->threadgroupBytes, why, sizeof(why));
+		} else {
+			rc = mesa.dispatch_buffers != NULL
+				    ? mesa.dispatch_buffers([work->pipeline compute], &bindings,
+					    table, work->count, work->groups,
+					    work->size, why, sizeof(why))
+				    : mesa.dispatch([work->pipeline compute], &bindings,
+					    work->groups, work->size, why, sizeof(why));
+		}
 		rw_work_time(RW_WORK_DISPATCH, work_began);
 		if (rc != 0) {
 			rw_print("the dispatch failed: %s\n", why);
