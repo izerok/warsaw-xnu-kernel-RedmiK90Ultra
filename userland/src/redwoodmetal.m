@@ -1396,9 +1396,11 @@ checkenv_or_name(void)
 
 	if (name == NULL || strcmp(name, "iconservicesagent") != 0)
 		return 0;
-	rw_print("v87: icon agent stays on the GPU; v85 retains the Metal device for the "
-	         "texture's whole life so HardwareTexture's weak reference survives. "
-	         "REDWOOD_AGENT_CPU=1 restores the v77 CPU fallback.\n");
+	rw_print("v77/v88: this process draws on the CPU; IconRendering's HardwareTexture "
+	         "asserts on a cleared weak reference. v87 retried the GPU path after v85 "
+	         "made textures retain their device, and it STILL died with SIGNAL 5 at "
+	         "IconRendering+0x55180 (TextureIO -> CoreUI -> IconServices). The weak "
+	         "reference is not our MTLDevice. REDWOOD_AGENT_GPU=1 tries the GPU again.\n");
 	return 1;
 }
 
@@ -1439,16 +1441,16 @@ checkenv_or_name(void)
 	 * and everything else still on this driver. REDWOOD_AGENT_GPU=1 keeps the old path
 	 * for the round that compares them.
 	 *
-	 * v87: the v77 answer to that experiment was "yes, but the icons are flat":
-	 * with no Metal device the agent bakes a static bitmap whose fixed white glass
-	 * highlight does not refract the wallpaper, which is the pasted-on rim on the
-	 * home screen (settings and ordinary UI are unaffected). v85 (upstream
-	 * 1bd058978) made every texture retain its device until its AIR resources are
-	 * destroyed, which is exactly the weak reference that was being zeroed. So the
-	 * GPU path is the default again; REDWOOD_AGENT_CPU=1 is the one-flag fallback
-	 * if IconRendering still aborts.
+	 * v87 RETRY, FAILED: the v77 workaround leaves the home screen with a flat,
+	 * pasted-on icon rim (a baked bitmap with a fixed white glass highlight that
+	 * never refracts the wallpaper), so the GPU path was retried after v85 made
+	 * textures retain their Metal device. It still aborts: SIGNAL 5 inside
+	 * IconRendering+0x55180, same stack as v74-v76. Whatever weak reference is
+	 * zeroed at HardwareTexture+0x60, it is not our device. CPU stays the default
+	 * until IconRendering itself is patched; the icon rim has to be addressed on
+	 * the CoreAnimation / SpringBoard side instead.
 	 */
-	if (getenv("REDWOOD_AGENT_CPU") != NULL && checkenv_or_name())
+	if (getenv("REDWOOD_AGENT_GPU") == NULL && checkenv_or_name())
 		return nil;
 	/* _MTLLibrary sends the specializations it cannot make in process to
 	 * MTLCompilerService, which is not alive here.  The hook answers them with a
