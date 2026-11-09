@@ -254,9 +254,29 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 }
 
 /* A view of a texture is another texture over the same memory, and the compiler library has
- * no call for that yet; nil is the honest answer, and it is better than a view that aliases
- * nothing. */
-- (id)newTextureViewWithPixelFormat:(NSUInteger)format { (void)format; return nil; }
+ * no call for that yet. nil was the honest answer, but a nil view comes back as
+ * -setTexture:nil and a kernel that reads that slot is refused at the dispatch, which
+ * failed CoreAnimation's whole command buffer -- compute_average_luma, whose widget layer
+ * never composited (v78-v80). The texture itself is returned instead: same memory, same
+ * layout, so a read cannot go wrong; when the asked-for pixel format differs from the
+ * texture's own, the channels may be read in each other's places, which is a wrong colour
+ * somewhere rather than a missing widget. */
+- (id)newTextureViewWithPixelFormat:(NSUInteger)format
+{
+	static unsigned seen;
+	if (++seen == 1) {
+		rw_print("a texture view is served as the texture itself (the compiler "
+		         "library has no call that makes a second texture over the same "
+		         "memory); pixel format %lu over this texture's own %lu\n",
+		         (unsigned long)format, (unsigned long)_shape.pixel_format);
+	}
+	if (format != (NSUInteger)_shape.pixel_format) {
+		RW_ONCE("a texture view asks for pixel format %lu over a texture of %lu, "
+		        "and reads the same bytes in each other's channels\n",
+		        (unsigned long)format, (unsigned long)_shape.pixel_format);
+	}
+	return self;
+}
 
 /*
  * THE REST OF WHAT <MTLTexture>, <MTLTextureSPI>, <MTLResource> AND <MTLResourceSPI>
@@ -272,10 +292,8 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 			     levels:(NSRange)levels
 			     slices:(NSRange)slices
 {
-	(void)format; (void)type; (void)levels; (void)slices;
-	RW_ONCE("a texture view is not implemented (the compiler library has no "
-		"call that makes a second texture over the same memory); nil\n");
-	return nil;
+	(void)type; (void)levels; (void)slices;
+	return [self newTextureViewWithPixelFormat:format];
 }
 - (id)newTextureViewWithPixelFormat:(NSUInteger)format
 			textureType:(NSUInteger)type
