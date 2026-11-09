@@ -203,6 +203,28 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 	}
 	line[k++] = '\n';
 	(void)write(2, line, (size_t)k);
+	/* v75: the registers at the fault. v74 found a `cbz x0, #trap` right after a call
+	 * through the shared cache's stub for libswiftCore, with the argument being
+	 * (something + 0x60) -- the address of a stored property, loaded as a weak reference
+	 * and answered nil. Which object that is, is in x22; what was asked for is in x0/x1;
+	 * and x19, x20 and x21 are the values the same block multiplies and hands on (0x50 and
+	 * 0x58 of that object). Printing six registers is what turns "a weak reference was
+	 * nil" into the reference itself. */
+	if (context != NULL) {
+		const ucontext_t *uc = (const ucontext_t *)context;
+		const uint64_t *x = uc->uc_mcontext->__ss.__x;
+
+		k = snprintf(line, sizeof(line),
+		    "rwm REGS: x0=%#llx x1=%#llx x2=%#llx x19=%#llx x20=%#llx x21=%#llx "
+		    "x22=%#llx x23=%#llx lr=%#llx sp=%#llx\n",
+		    (unsigned long long)x[0], (unsigned long long)x[1],
+		    (unsigned long long)x[2], (unsigned long long)x[19],
+		    (unsigned long long)x[20], (unsigned long long)x[21],
+		    (unsigned long long)x[22], (unsigned long long)x[23],
+		    (unsigned long long)uc->uc_mcontext->__ss.__lr,
+		    (unsigned long long)uc->uc_mcontext->__ss.__sp);
+		(void)write(2, line, (size_t)k);
+	}
 	signal(number, SIG_DFL);
 	raise(number);
 }
