@@ -617,6 +617,15 @@ rw_work_time(int kind, uint64_t began)
 		}
 		rw_work_time(RW_WORK_DISPATCH, work_began);
 		if (rc != 0) {
+			/* what the dispatch really had, one line: the kernel's complaint names
+			 * a slot, and this names what was bound there. A nil pointer prints as
+			 * "nil" through the %p of a null pointer. */
+			rw_print("dispatch was: textures %u [%p %p %p %p] samplers %u "
+			         "buffers %u tgmem %u\n",
+			         work->textureCount, (void *)work->textures[0],
+			         (void *)work->textures[1], (void *)work->textures[2],
+			         (void *)work->textures[3], work->samplerCount, work->count,
+			         work->threadgroupBytes);
 			rw_print("the dispatch failed: %s\n", why);
 			_error = [[NSError errorWithDomain:@"RedwoodMetal" code:2
 						  userInfo:@{ NSLocalizedDescriptionKey:
