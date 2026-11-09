@@ -452,6 +452,16 @@ rwd_canonical_fourcc(uint32_t got, uint32_t want)
 	if (got == 'LA08' && want == 'RG08') {
 		return want;
 	}
+	/* iOS 26 composites its offscreen layers as '&RhA' and asks Metal for
+	 * RGBA16Float ('RGhA', metal 115). Both are one plane of eight bytes a
+	 * pixel, R and A in the same places, half floats throughout; the leading
+	 * byte differs the way '&BGA' differs from 'BGRA' above. backboardd asks
+	 * for one every frame (v77: "Failed to allocate MTLTexture from IOSurface
+	 * 0x243", ten times a second) and gets nil, which is the blank weather and
+	 * calendar widgets on the home screen. */
+	if (got == '&RhA' && want == 'RGhA') {
+		return want;
+	}
 	return got;
 }
 
