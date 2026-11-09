@@ -73,6 +73,10 @@ enum RWCopyKind { RW_COPY_NONE, RW_COPY_BUFFER, RW_COPY_TEXTURE, RW_COPY_MIPMAP,
 	id samplers[RW_MAX_BUFFERS];
 	unsigned count, textureCount, samplerCount;
 	unsigned groups[3], size[3];
+	/* what -setThreadgroupMemoryLength:atIndex: gave, in bytes, for the dispatch this
+	 * work runs; rwa_dispatch_threadgroup takes it and a kernel that declares a
+	 * threadgroup buffer is refused at zero rather than run with nothing */
+	unsigned threadgroupBytes;
 }
 /* Call once the encoder has finished filling this immutable work item. */
 - (void)retainResources;
