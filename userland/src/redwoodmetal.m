@@ -222,6 +222,28 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 		    (unsigned long long)x[20], (unsigned long long)x[21],
 		    (unsigned long long)x[22], (unsigned long long)x[23]);
 		(void)write(2, line, (size_t)k);
+		/* v76: WHICH object. v75 showed the call takes exactly one argument -- the
+		 * address x22+0x60 -- and answers nil, which is swift_unknownObjectWeakLoadStrong's
+		 * shape: the reference stored there was cleared. x22 differs every crash while
+		 * x1 and x23 stay 0x209ddd2a0 / 0x2007602d0, so these are objects of one class
+		 * being torn down while IconRendering is still drawing through them. The isa is
+		 * printed raw, because reading it is one load and cannot lock; the class name is
+		 * asked for afterwards, and if the runtime is not in a state to answer, the line
+		 * before it still carries the isa. */
+		if (x[22] != 0) {
+			uint64_t isa = 0, weak = 0;
+			const char *cls = NULL;
+
+			memcpy(&isa, (const void *)(uintptr_t)x[22], sizeof(isa));
+			memcpy(&weak, (const void *)(uintptr_t)(x[22] + 0x60), sizeof(weak));
+			cls = object_getClassName((id)(uintptr_t)x[22]);
+			k = snprintf(line, sizeof(line),
+			    "rwm CLASS: x22 isa=%#llx weak@+0x60=%#llx x19 isa=%#llx class=%s\n",
+			    (unsigned long long)isa, (unsigned long long)weak,
+			    x[19] ? (unsigned long long)*(const uint64_t *)(uintptr_t)x[19] : 0ULL,
+			    cls != NULL ? cls : "?");
+			(void)write(2, line, (size_t)k);
+		}
 	}
 	signal(number, SIG_DFL);
 	raise(number);
