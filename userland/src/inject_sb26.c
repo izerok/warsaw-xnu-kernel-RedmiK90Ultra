@@ -31,6 +31,8 @@
 #include <unistd.h>
 #include <execinfo.h>
 #include <signal.h>
+#include <pthread.h>
+#include <time.h>
 
 extern const void *_dyld_get_shared_cache_range(size_t *);
 extern id MTLCreateSystemDefaultDevice(void);
@@ -842,6 +844,86 @@ sb26_xpc_cache_put(const char *key, xpc_object_t reply)
     sb26_xpc_cache_last = slot;
 }
 
+/* ---------------------------------------------------------------------------------------
+ * v84: the trimmed system has Mach services with no launchd job behind them. Every
+ * synchronous request to one of them comes back with the SAME global XPC_TYPE_ERROR
+ * object (v82: 0x20e3f2460 for commcenter.xpc x255, appprotectiond.read x204 and
+ * splashboard.launchimage x2; v83 added coremedia.routediscoverer.xpc and
+ * audio.AudioSession). SpringBoard makes a fresh bootstrap lookup for each of them,
+ * and a single icon tap issued 32 appprotectiond.read calls in v82.
+ *
+ * After a service has answered with the identical error object three times in a
+ * row it is permanently dead: keep that object and hand it straight back. The
+ * object is a global XPC error constant, so the answer is exactly what the real
+ * call would have produced, minus the launchd lookup. Only XPC_TYPE_ERROR replies
+ * are ever cached; any other reply clears the streak, so a live service can never
+ * be short-circuited. iconservices is excluded -- its reply replay/cache logic
+ * above must keep seeing every request.
+ * --------------------------------------------------------------------------------------- */
+#define SB26_DEAD_MAX       24
+#define SB26_DEAD_STREAK    3
+static struct {
+    char name[96];
+    xpc_object_t err;               /* cached error, retained */
+    xpc_object_t last;              /* last error pointer seen, not retained */
+    unsigned streak;
+    unsigned long hits;
+} sb26_dead[SB26_DEAD_MAX];
+static unsigned sb26_dead_n;
+static pthread_mutex_t sb26_dead_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static xpc_object_t
+sb26_dead_cached(const char *name)
+{
+    if (!name) return NULL;
+    xpc_object_t reply = NULL;
+    pthread_mutex_lock(&sb26_dead_lock);
+    for (unsigned i = 0; i < sb26_dead_n; i++) {
+        if (!strcmp(sb26_dead[i].name, name) && sb26_dead[i].err) {
+            sb26_dead[i].hits++;
+            reply = xpc_retain(sb26_dead[i].err);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&sb26_dead_lock);
+    return reply;
+}
+
+static void
+sb26_dead_note(const char *name, xpc_object_t reply)
+{
+    if (!name) return;
+    int is_error = reply && xpc_get_type(reply) == XPC_TYPE_ERROR;
+    pthread_mutex_lock(&sb26_dead_lock);
+    unsigned i;
+    for (i = 0; i < sb26_dead_n; i++)
+        if (!strcmp(sb26_dead[i].name, name)) break;
+    if (i == sb26_dead_n) {
+        if (sb26_dead_n == SB26_DEAD_MAX) { pthread_mutex_unlock(&sb26_dead_lock); return; }
+        i = sb26_dead_n++;
+        memset(&sb26_dead[i], 0, sizeof(sb26_dead[i]));
+        snprintf(sb26_dead[i].name, sizeof(sb26_dead[i].name), "%s", name);
+    }
+    if (!is_error) {
+        sb26_dead[i].streak = 0;
+        sb26_dead[i].last = NULL;
+        if (sb26_dead[i].err) {
+            xpc_release(sb26_dead[i].err);
+            sb26_dead[i].err = NULL;
+            fprintf(stderr, "sb26 DEAD name=%s revived\n", name);
+        }
+    } else if (!sb26_dead[i].err) {
+        sb26_dead[i].streak = (reply == sb26_dead[i].last) ? sb26_dead[i].streak + 1 : 1;
+        sb26_dead[i].last = reply;
+        if (sb26_dead[i].streak >= SB26_DEAD_STREAK) {
+            sb26_dead[i].err = xpc_retain(reply);
+            fprintf(stderr, "sb26 DEAD name=%s reply=%p after %u identical errors\n",
+                name, reply, sb26_dead[i].streak);
+        }
+    }
+    pthread_mutex_unlock(&sb26_dead_lock);
+}
+
 static atomic_uint sb26_xpc_sync_n;
 static _Thread_local unsigned sb26_xpc_depth;
 
@@ -869,6 +951,20 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         fprintf(stderr, "sb26 xpc sync #%u RECURSION name=%s\n", n, name ? name : "-");
         return NULL;
     }
+
+    /* v84: a service proven dead three times in a row needs no launchd lookup.
+     * iconservices keeps its own reply-replay path above. */
+    if (!is_icons) {
+        xpc_object_t dead = sb26_dead_cached(name);
+        if (dead) {
+            fprintf(stderr, "sb26 xpc sync #%u DEADCACHE name=%s reply=%p us=0\n",
+                n, name ? name : "-", dead);
+            return dead;
+        }
+    }
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     /* v66: the agent dies right after receiving an ISGeneration request and its
      * death strands every in-flight xpc_connection_send_message_with_reply_sync
@@ -945,7 +1041,12 @@ done_icons:
         sb26_xpc_depth--;
     }
 
-    fprintf(stderr, "sb26 xpc sync #%u <- name=%s reply=%p\n", n, name ? name : "-", reply);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long long us = (long long)(t1.tv_sec - t0.tv_sec) * 1000000LL +
+        (t1.tv_nsec - t0.tv_nsec) / 1000;
+    if (!is_icons) sb26_dead_note(name, reply);
+    fprintf(stderr, "sb26 xpc sync #%u <- name=%s reply=%p us=%lld\n",
+        n, name ? name : "-", reply, us);
     return reply;
 }
 
