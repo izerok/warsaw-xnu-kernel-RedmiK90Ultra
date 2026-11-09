@@ -65,7 +65,8 @@ jobs:
               src/input26_service.c -o obj/input26-service
           /usr/bin/codesign --force --sign - --entitlements src/input26_service.entitlements obj/input26-service
           $CC -dynamiclib -install_name /redwood/lib/libredwood-sb26.dylib -Os -Wall -Wextra \
-              -framework CoreFoundation -framework Metal -lobjc -lMobileGestalt \
+              -framework CoreFoundation -framework CoreGraphics -framework Metal \
+              -lobjc -lMobileGestalt \
               src/inject_sb26.c src/inject_sb26_layers.c src/inject_sb26_rate.c src/inject_posterboard.c \
               -o obj/libredwood-sb26.dylib
           /usr/bin/codesign --force --sign - obj/libredwood-sb26.dylib
