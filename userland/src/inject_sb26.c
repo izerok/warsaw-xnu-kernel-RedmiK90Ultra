@@ -10,6 +10,7 @@
  * keeps the lock screen until it is swiped away.
  */
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 #include <dispatch/dispatch.h>
@@ -1187,6 +1188,304 @@ sb26_uiimage_by_scan(const char *root)
     return image;
 }
 
+/* ---------------------------------------------------------------------------
+ * v89: clear-glass home screen (user options A + C).
+ *
+ * Upstream annibale gets clear icons and a translucent Dock from CoreAnimation's
+ * own glass shaders. On warsaw the icon artwork is a plain AppIcon PNG that
+ * sb26_fill_one_icon() sets on SBIconImageView's layer, because the native
+ * iconservicesagent GPU path still traps, so the icons are flat opaque squares
+ * with a baked white highlight rim -- the "cut-out" look. Bake the clear look
+ * into the bitmap instead: squircle clip, light/white pixels keep less alpha
+ * than saturated ones, faint upper-left sheen. The wallpaper then shows through.
+ *
+ * Dock / search pill / home-screen widgets are glass groups rendered into an
+ * opaque offscreen surface; lower their opacity and give them a translucent
+ * white base so the purple-blue wallpaper shows through even before the Mesa
+ * 0016 / offscreen-clear fixes reach this device.
+ *
+ * All tunables live in /redwood/etc/glass.conf on the small root disk, so a
+ * rebuild of root26.apfs (no recompile) is enough to retune after a device run.
+ * --------------------------------------------------------------------------- */
+typedef struct { double x, y, w, h; } sb26_rect;
+
+static float glass_icon_color = 0.84f;
+static float glass_icon_white = 0.30f;
+static float glass_dock       = 0.55f;
+static float glass_search     = 0.50f;
+static float glass_widget     = 0.34f;
+static int   glass_on         = 1;
+static int   glass_conf_read;
+
+static void
+sb26_glass_conf(void)
+{
+    FILE *f;
+    char line[256];
+    if (glass_conf_read) return;
+    glass_conf_read = 1;
+    f = fopen("/redwood/etc/glass.conf", "r");
+    if (!f) {
+        fprintf(stderr, "sb26 glass: no /redwood/etc/glass.conf, using defaults\n");
+        return;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        char key[64];
+        float value;
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        if (sscanf(line, " %63[^= \t] = %f", key, &value) != 2) continue;
+        if (!strcmp(key, "icon_color")) glass_icon_color = value;
+        else if (!strcmp(key, "icon_white")) glass_icon_white = value;
+        else if (!strcmp(key, "dock")) glass_dock = value;
+        else if (!strcmp(key, "search")) glass_search = value;
+        else if (!strcmp(key, "widget")) glass_widget = value;
+        else if (!strcmp(key, "on")) glass_on = (int)value;
+    }
+    fclose(f);
+    fprintf(stderr,
+        "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f\n",
+        glass_on, glass_icon_color, glass_icon_white, glass_dock, glass_search,
+        glass_widget);
+}
+
+struct sb26_glass_entry { char key[192]; id image; };
+static struct sb26_glass_entry glass_cache[64];
+static unsigned glass_used, glass_made, glass_hits, glass_failed;
+
+/* The CGImage we hand to CALayer is cached per bundle: sb26_fill_one_icon runs
+ * nine times in the first 150 s and on every com.redwood.icons notify. */
+static id
+sb26_glass_image(const char *key, id src)
+{
+    CGImageRef cg, out;
+    CGColorSpaceRef cs;
+    CGContextRef ctx;
+    CGPathRef path;
+    CGRect box;
+    CGFloat radius;
+    size_t w, h, stride, x, y;
+    unsigned char *px;
+    unsigned i;
+    float color_a, white_a;
+
+    if (!glass_on || !src || !key) return src;
+    for (i = 0; i < glass_used; i++)
+        if (!strncmp(glass_cache[i].key, key, sizeof(glass_cache[i].key) - 1)) {
+            glass_hits++;
+            return glass_cache[i].image;
+        }
+    if (glass_used >= sizeof(glass_cache) / sizeof(glass_cache[0])) return src;
+
+    cg = (CGImageRef)(void *)src;
+    w = CGImageGetWidth(cg);
+    h = CGImageGetHeight(cg);
+    if (!w || !h || w > 1024 || h > 1024) { glass_failed++; return src; }
+    color_a = glass_icon_color;
+    white_a = glass_icon_white;
+    if (color_a < 0.05f) color_a = 0.05f;
+    if (color_a > 1.0f) color_a = 1.0f;
+    if (white_a < 0.0f) white_a = 0.0f;
+    if (white_a > color_a) white_a = color_a;
+
+    cs = CGColorSpaceCreateDeviceRGB();
+    ctx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) { glass_failed++; return src; }
+    box = CGRectMake(0, 0, (CGFloat)w, (CGFloat)h);
+    radius = (CGFloat)(w < h ? w : h) * 0.2237;
+    path = CGPathCreateWithRoundedRect(box, radius, radius, NULL);
+    if (path) {
+        CGContextAddPath(ctx, path);
+        CGContextClip(ctx);
+    }
+    /* CGBitmapContext is y-up; flip so the first row of the buffer is the top
+     * of the icon, otherwise every glassified icon comes out upside down. */
+    CGContextTranslateCTM(ctx, 0, (CGFloat)h);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CGContextDrawImage(ctx, box, cg);
+
+    px = (unsigned char *)CGBitmapContextGetData(ctx);
+    stride = CGBitmapContextGetBytesPerRow(ctx);
+    if (px) {
+        for (y = 0; y < h; y++) {
+            unsigned char *row = px + y * stride;
+            for (x = 0; x < w; x++) {
+                unsigned char *q = row + x * 4;   /* RGBA, big-endian 32 */
+                unsigned a = q[3];
+                float r, g, b, mx, mn, sat, lum, white, target, na, sheen;
+                if (!a) continue;
+                r = (float)q[0] * 255.0f / (float)a;
+                g = (float)q[1] * 255.0f / (float)a;
+                b = (float)q[2] * 255.0f / (float)a;
+                mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+                sat = mx > 0.0f ? (mx - mn) / mx : 0.0f;
+                lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
+                white = lum * (1.0f - sat);       /* pale, unsaturated pixels */
+                if (white < 0.0f) white = 0.0f;
+                if (white > 1.0f) white = 1.0f;
+                target = color_a + (white_a - color_a) * white;
+                na = ((float)a / 255.0f) * target;
+                sheen = 0.07f * (1.0f - 0.5f * ((float)x / (float)w
+                                              + (float)y / (float)h));
+                r += (255.0f - r) * sheen;
+                g += (255.0f - g) * sheen;
+                b += (255.0f - b) * sheen;
+                q[0] = (unsigned char)(r * na + 0.5f);
+                q[1] = (unsigned char)(g * na + 0.5f);
+                q[2] = (unsigned char)(b * na + 0.5f);
+                q[3] = (unsigned char)(na * 255.0f + 0.5f);
+            }
+        }
+    }
+    out = CGBitmapContextCreateImage(ctx);
+    if (path) CGPathRelease(path);
+    CGContextRelease(ctx);
+    if (!out) { glass_failed++; return src; }
+    snprintf(glass_cache[glass_used].key, sizeof(glass_cache[glass_used].key),
+        "%s", key);
+    glass_cache[glass_used].image = (id)(void *)out;
+    glass_used++;
+    glass_made++;
+    return (id)(void *)out;
+}
+
+static sb26_rect
+sb26_glass_bounds(id layer)
+{
+    sb26_rect (*fn)(id, SEL) = (sb26_rect (*)(id, SEL))objc_msgSend;
+    return fn(layer, sel_registerName("bounds"));
+}
+
+static void
+sb26_glass_setf(id layer, const char *name, double value)
+{
+    ((void (*)(id, SEL, double))objc_msgSend)(layer, sel_registerName(name), value);
+}
+
+static void
+sb26_glass_seto(id layer, const char *name, id value)
+{
+    if (value)
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName(name), value);
+}
+
+static id
+sb26_glass_cgcolor(double white, double alpha)
+{
+    Class cls = objc_getClass("UIColor");
+    SEL sel;
+    id color;
+    if (!cls) return nil;
+    sel = sel_registerName("colorWithWhite:alpha:");
+    color = ((id (*)(Class, SEL, double, double))objc_msgSend)((id)cls, sel,
+        white, alpha);
+    return sb26_ask(color, "CGColor");
+}
+
+static unsigned glass_passes, glass_applied, glass_logs;
+
+static void
+sb26_glass_apply(id layer, int kind, const char *cls, sb26_rect b)
+{
+    Class tx = objc_getClass("CATransaction");
+    float opacity;
+    double radius;
+    const char *tag;
+
+    if (kind == 1) { opacity = glass_dock;   radius = b.h * 0.335; tag = "dock";   }
+    else if (kind == 2) { opacity = glass_search; radius = b.h * 0.5; tag = "search"; }
+    else { opacity = glass_widget; radius = b.w * 0.17; tag = "widget"; }
+
+    if (tx) {
+        ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("begin"));
+        ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx,
+            sel_registerName("setDisableActions:"), YES);
+    }
+    sb26_glass_setf(layer, "setOpacity:", opacity);
+    if (radius > 1.0 && radius < 80.0)
+        sb26_glass_setf(layer, "setCornerRadius:", radius);
+    sb26_glass_seto(layer, "setBackgroundColor:", sb26_glass_cgcolor(1.0, 0.09));
+    sb26_glass_seto(layer, "setBorderColor:", sb26_glass_cgcolor(1.0, 0.22));
+    sb26_glass_setf(layer, "setBorderWidth:", 0.8);
+    if (tx) ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("commit"));
+
+    glass_applied++;
+    if (glass_logs < 40) {
+        glass_logs++;
+        fprintf(stderr,
+            "sb26 glass: %-6s %-34s bounds=%.0fx%.0f opacity=%.2f radius=%.1f\n",
+            tag, cls, b.w, b.h, opacity, radius);
+    }
+}
+
+static void
+sb26_glass_walk(id view, int depth, int in_home)
+{
+    const char *cls;
+    id layer = nil, subviews;
+    unsigned long count, i;
+    sb26_rect b = { 0, 0, 0, 0 };
+    int kind = 0, home = in_home;
+
+    if (!view || depth > 16) return;
+    cls = class_getName(object_getClass(view));
+    if (cls && strstr(cls, "SBHomeScreenWindow")) home = 1;
+    layer = sb26_ask(view, "layer");
+    if (layer) b = sb26_glass_bounds(layer);
+    if (home && cls && layer && glass_on) {
+        if (strstr(cls, "SBDockView")) kind = 1;
+        else if (strstr(cls, "_GlassGroupView") && b.w > 250.0 && b.h > 60.0
+                 && b.h < 140.0) kind = 1;
+        else if (strstr(cls, "SBHSearchPillView")) kind = 2;
+        else if (strstr(cls, "SBHWidgetStackScrollView")) kind = 3;
+        else if (strstr(cls, "NSKVONotifying_UIView") && b.w > 140.0
+                 && b.w < 200.0 && b.h > 140.0 && b.h < 200.0) kind = 3;
+        if (kind) sb26_glass_apply(layer, kind, cls, b);
+    }
+    subviews = sb26_ask(view, "subviews");
+    if (!subviews) return;
+    if (!class_respondsToSelector(object_getClass(subviews),
+        sel_registerName("count"))) return;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(subviews,
+        sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id child = ((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews,
+            sel_registerName("objectAtIndex:"), i);
+        sb26_glass_walk(child, depth + 1, home);
+    }
+}
+
+static void
+sb26_glass_pass(void)
+{
+    Class wc = objc_getClass("UIWindow");
+    SEL all = sel_registerName("allWindowsIncludingInternalWindows:onlyVisibleWindows:");
+    id windows = nil, app;
+    unsigned long count, i;
+
+    if (wc && class_respondsToSelector(object_getClass((id)wc), all))
+        windows = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)((id)wc, all, YES, YES);
+    if (!windows) {
+        app = sb26_ask((id)objc_getClass("UIApplication"), "sharedApplication");
+        windows = sb26_ask(app, "windows");
+    }
+    if (!windows) return;
+    sb26_glass_conf();
+    glass_passes++;
+    count = ((unsigned long (*)(id, SEL))objc_msgSend)(windows,
+        sel_registerName("count"));
+    for (i = 0; i < count; i++) {
+        id w = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows,
+            sel_registerName("objectAtIndex:"), i);
+        sb26_glass_walk(w, 0, 0);
+    }
+    if (glass_passes <= 3 || glass_passes % 10 == 0)
+        fprintf(stderr, "sb26 glass: pass=%u applied=%u made=%u hits=%u failed=%u\n",
+            glass_passes, glass_applied, glass_made, glass_hits, glass_failed);
+}
+
 static void
 sb26_fill_one_icon(id view)
 {
@@ -1318,7 +1617,9 @@ sb26_fill_one_icon(id view)
         ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("begin"));
         ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx, sel_registerName("setDisableActions:"), YES);
     }
-    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), cg);
+    sb26_glass_conf();
+    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"),
+        sb26_glass_image(root, cg));
     ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
     if (tx) ((void (*)(Class, SEL))objc_msgSend)(tx, sel_registerName("commit"));
 }
@@ -1444,6 +1745,7 @@ sb26_icon_late_step(void *context)
     sb26_install_all_icon_layer_fallbacks();
     sb26_fill_all_icons();
     sb26_fill_wallpaper();
+    sb26_glass_pass();
     fprintf(stderr,
         "sb26: icons +%lus: filled=%u seen=%u refilled=%u nopath=%u noimg=%u | hooked=%u calls=%u wrapped=%u"
         " | wall seen=%u filled=%u had=%u noimg=%u layers=%u\n",
@@ -1461,7 +1763,13 @@ sb26_install_icon_refresh_notify(void)
     int token;
     notify_register_dispatch("com.redwood.icons", &token, dispatch_get_main_queue(), ^(int t) {
         (void)t;
+        /* Host-side retuning: edit /redwood/etc/glass.conf, then post this
+         * notify; drop the baked bitmaps so the new alpha values take effect. */
+        glass_conf_read = 0;
+        glass_used = 0;
+        sb26_glass_conf();
         sb26_fill_all_icons();
+        sb26_glass_pass();
         fprintf(stderr, "sb26: icon refresh notify: filled=%u refilled=%u seen=%u\n",
             sb26_icons_filled, sb26_icons_refreshed, sb26_icons_seen);
     });
