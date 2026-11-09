@@ -1396,8 +1396,9 @@ checkenv_or_name(void)
 
 	if (name == NULL || strcmp(name, "iconservicesagent") != 0)
 		return 0;
-	rw_print("v77: this process draws on the CPU; IconRendering's HardwareTexture asserts "
-	         "on a cleared weak reference (REDWOOD_AGENT_GPU=1 keeps the GPU path)\n");
+	rw_print("v87: icon agent stays on the GPU; v85 retains the Metal device for the "
+	         "texture's whole life so HardwareTexture's weak reference survives. "
+	         "REDWOOD_AGENT_CPU=1 restores the v77 CPU fallback.\n");
 	return 1;
 }
 
@@ -1437,8 +1438,17 @@ checkenv_or_name(void)
 	 * Metal support takes). That is the entire experiment: agent on the CPU, SpringBoard
 	 * and everything else still on this driver. REDWOOD_AGENT_GPU=1 keeps the old path
 	 * for the round that compares them.
+	 *
+	 * v87: the v77 answer to that experiment was "yes, but the icons are flat":
+	 * with no Metal device the agent bakes a static bitmap whose fixed white glass
+	 * highlight does not refract the wallpaper, which is the pasted-on rim on the
+	 * home screen (settings and ordinary UI are unaffected). v85 (upstream
+	 * 1bd058978) made every texture retain its device until its AIR resources are
+	 * destroyed, which is exactly the weak reference that was being zeroed. So the
+	 * GPU path is the default again; REDWOOD_AGENT_CPU=1 is the one-flag fallback
+	 * if IconRendering still aborts.
 	 */
-	if (getenv("REDWOOD_AGENT_GPU") == NULL && checkenv_or_name())
+	if (getenv("REDWOOD_AGENT_CPU") != NULL && checkenv_or_name())
 		return nil;
 	/* _MTLLibrary sends the specializations it cannot make in process to
 	 * MTLCompilerService, which is not alive here.  The hook answers them with a
