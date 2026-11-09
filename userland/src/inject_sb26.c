@@ -783,6 +783,7 @@ sb26_install_crash_logger(void)
 #define SB26_XPC_CACHE_MAX 64
 static struct { char key[72]; xpc_object_t reply; } sb26_xpc_cache[SB26_XPC_CACHE_MAX];
 static unsigned sb26_xpc_cache_n;
+static unsigned sb26_xpc_cache_last;
 
 /* Key: length + first 64 bytes of the request's "root" data — icon requests for the
  * same icon repeat byte-for-byte (the "sequence" number lives outside the blob). */
@@ -813,6 +814,17 @@ sb26_xpc_cache_get(const char *key)
     return NULL;
 }
 
+/* v69: a decodable reply, any reply. When the agent dies with a request in flight the async
+ * API can hand back NULL (v68: two of those still reached NSXPCConnection and aborted
+ * SpringBoard). A cached ISGenerationResponse for ANOTHER icon decodes fine and shows that
+ * icon; a crash shows nothing. Last resort only, and only ever a real captured reply. */
+static xpc_object_t
+sb26_xpc_cache_any(void)
+{
+    if (sb26_xpc_cache_n == 0) return NULL;
+    return sb26_xpc_cache[sb26_xpc_cache_last].reply;
+}
+
 static void
 sb26_xpc_cache_put(const char *key, xpc_object_t reply)
 {
@@ -827,6 +839,7 @@ sb26_xpc_cache_put(const char *key, xpc_object_t reply)
     }
     snprintf(sb26_xpc_cache[slot].key, sizeof(sb26_xpc_cache[slot].key), "%s", key);
     sb26_xpc_cache[slot].reply = xpc_retain(reply);
+    sb26_xpc_cache_last = slot;
 }
 
 static atomic_uint sb26_xpc_sync_n;
@@ -887,12 +900,24 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
         if (dispatch_semaphore_wait(done,
                 dispatch_time(DISPATCH_TIME_NOW, 4LL * NSEC_PER_SEC)) == 0) {
             reply = async_reply;
-            sb26_xpc_cache_put(key, reply);
+            if (reply) {
+                sb26_xpc_cache_put(key, reply);
+            } else {
+                /* v68 saw the handler itself called with NULL; returning that aborted
+                 * SpringBoard. Fall back to a reply that is known to decode. */
+                reply = sb26_xpc_cache_get(key);
+                if (!reply) reply = sb26_xpc_cache_any();
+                reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
+                fprintf(stderr, "sb26 xpc sync #%u NULLREPLY name=%s key=%.24s cached=%d\n",
+                    n, name, key, sb26_xpc_cache_n != 0);
+            }
         } else {
             /* NSXPCConnection requires a dictionary: NULL aborts SpringBoard with
              * "root object is not an XPC dictionary" (v66). Replay a real reply of
-             * the same icon request when one was ever captured, else an empty one. */
+             * the same icon request when one was ever captured; if this key is cold,
+             * replay the newest captured one (wrong icon beats a dead SpringBoard). */
             reply = sb26_xpc_cache_get(key);
+            if (!reply) reply = sb26_xpc_cache_any();
             reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
             fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d\n",
                 n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY);
