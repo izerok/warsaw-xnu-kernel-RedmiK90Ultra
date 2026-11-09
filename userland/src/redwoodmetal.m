@@ -105,6 +105,7 @@
 
 #include "redwood_drawable.h"
 #include <execinfo.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -153,6 +154,70 @@ rwm_install_crash_logger(void)
 	sigemptyset(&action.sa_mask);
 	for (unsigned i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
 		sigaction(signals[i], &action, NULL);
+	}
+}
+
+/* ---------------------------------------------------------------------------------------
+ * v71: the icon agent's death is still unexplained. A fatal signal never reaches the logger
+ * above (v68/v70: not one "rwm CRASH" line), so the process is either killed with SIGKILL
+ * or leaves through exit(). This tells the two apart, and dates the moment: a beat every
+ * two seconds, an atexit line if it leaves of its own accord, and a line if SIGTERM (what
+ * launchd sends first) ever arrives. Only iconservicesagent prints, so the log stays small.
+ * --------------------------------------------------------------------------------------- */
+static const char *
+rwm_prog(void)
+{
+	return getprogname() ? getprogname() : "?";
+}
+
+static void
+rwm_atexit_logger(void)
+{
+	fprintf(stderr, "rwm atexit: %s %d\n", rwm_prog(), getpid());
+}
+
+static void
+rwm_term_logger(int number, siginfo_t *info, void *context)
+{
+	(void)info;
+	(void)context;
+	fprintf(stderr, "rwm SIG%d: %s %d\n", number, rwm_prog(), getpid());
+	signal(number, SIG_DFL);
+	raise(number);
+}
+
+static void *
+rwm_beater(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		fprintf(stderr, "rwm beat: %s %d\n", rwm_prog(), getpid());
+		sleep(2);
+	}
+	return NULL;
+}
+
+__attribute__((constructor))
+static void
+rwm_install_lifecycle_loggers(void)
+{
+	const char *prog = getprogname();
+	struct sigaction action = { 0 };
+	pthread_t thread;
+	int signals[] = { SIGTERM, SIGINT, SIGHUP };
+
+	if (!prog || strcmp(prog, "iconservicesagent") != 0) {
+		return;
+	}
+	action.sa_sigaction = rwm_term_logger;
+	action.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESETHAND;
+	sigemptyset(&action.sa_mask);
+	for (unsigned i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+		sigaction(signals[i], &action, NULL);
+	}
+	atexit(rwm_atexit_logger);
+	if (pthread_create(&thread, NULL, rwm_beater, NULL) == 0) {
+		pthread_detach(thread);
 	}
 }
 
