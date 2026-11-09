@@ -1,7 +1,9 @@
 name: build mesa air
 
-# libredwoodair.dylib -- the Mesa AIR frontend that the Metal driver dlopens to
-# turn a Metal shader into Adreno ir3 machine code.
+# libannibaleair.dylib -- the Mesa AIR frontend that the Metal driver dlopens to
+# turn a Metal shader into Adreno ir3 machine code. (Upstream renamed it from
+# libredwoodair.dylib, install name /redwood/lib/... -> /annibale/lib/...;
+# see the 2026-11-09 drift note further down.)
 #
 # Without it the device still finds the GPU (metal_caps reads vendorName Apple,
 # maxWorkingSetSize 536870912, hasUnifiedMemory yes) and can still create a
@@ -27,6 +29,14 @@ name: build mesa air
 # mk-mesa.sh stops at PREPARE because its patch step wants GNU patch and its
 # compile step wants the container's toolchain; here GNU patch comes from
 # homebrew and the toolchain is Xcode, so one runner does both halves.
+#
+# 2026-11-09 drift (fork runs 42624419623 step 5, 42630944728 step 7): upstream
+# restructured again. tools/mesa/redwood-drm is annibale-drm now (the unpack
+# step follows either name), and air-metal.patch now defines the device
+# library as shared_library('annibaleair') with the install name
+# /annibale/lib/libannibaleair.dylib baked in at link time -- the old
+# libredwoodair target no longer exists, so steps 7-10 name the new one.
+# The rwa_* interface (tools/mesa/air/air_metal.h) is unchanged.
 
 on:
   workflow_dispatch:
@@ -219,7 +229,7 @@ jobs:
             -Dgallium-va=disabled -Dlmsensors=disabled -Dbuild-tests=false 2>&1 \
             | tee /tmp/mesa/out/meson-setup.log
 
-      - name: ninja libredwoodair.dylib
+      - name: ninja libannibaleair.dylib
         # PYTHONHASHSEED is fixed because Mesa's isaspec generator writes
         # encode.h in set iteration order; without it two builds of the same
         # tree differ in bytes (build-air.py's note, and the reason a hash here
@@ -228,23 +238,25 @@ jobs:
           set -euo pipefail
           export PATH="$HOST_BIN:/tmp/venv/bin:$PATH"
           export PYTHONHASHSEED=0
-          TARGET=src/gallium/drivers/freedreno/libredwoodair.dylib
-          echo "--- targets that mention redwoodair ---"
-          ninja -C /tmp/mesa/build -t targets all | grep -i redwoodair || true
+          TARGET=src/gallium/drivers/freedreno/libannibaleair.dylib
+          echo "--- targets that mention annibaleair ---"
+          ninja -C /tmp/mesa/build -t targets all | grep -i annibaleair || true
           ninja -C /tmp/mesa/build -v "$TARGET" 2>&1 | tee /tmp/mesa/out/ninja.log
           ls -l "/tmp/mesa/build/$TARGET"
 
       - name: Name and sign the library the way the device needs
-        # meson writes @rpath; the Metal driver dlopens the absolute path and
-        # libredwoodair.dylib is linked against by install name, so the id has
-        # to be /redwood/lib/libredwoodair.dylib. It is changed before the
-        # signature, because rewriting a Mach-O invalidates one.
+        # air-metal.patch now bakes the install name in at link time; the Metal
+        # driver dlopens the absolute path and libannibaleair.dylib is linked
+        # against by install name, so the id has to be
+        # /annibale/lib/libannibaleair.dylib. The install_name_tool call below
+        # re-asserts that id before signing (rewriting a Mach-O after signing
+        # would invalidate the signature).
         run: |
           set -euo pipefail
-          B=/tmp/mesa/build/src/gallium/drivers/freedreno/libredwoodair.dylib
-          O=/tmp/mesa/out/libredwoodair.dylib
+          B=/tmp/mesa/build/src/gallium/drivers/freedreno/libannibaleair.dylib
+          O=/tmp/mesa/out/libannibaleair.dylib
           cp "$B" "$O"
-          install_name_tool -id /redwood/lib/libredwoodair.dylib "$O"
+          install_name_tool -id /annibale/lib/libannibaleair.dylib "$O"
           /usr/bin/codesign --force --sign - "$O"
           echo "--- install name ---"
           otool -D "$O"
@@ -254,16 +266,16 @@ jobs:
           nm -gU "$O" | awk '{ print $NF }' | LC_ALL=C sort > /tmp/mesa/out/exports-rwa.txt
           RWA=$(grep -c '^_rwa_' /tmp/mesa/out/exports-rwa.txt || true)
           echo "$RWA rwa_* functions"
-          [ "${RWA:-0}" -gt 0 ] || { echo "::error::libredwoodair.dylib exports no rwa_* at all"; exit 1; }
-          [ "$(otool -D "$O" | sed -n 2p)" = /redwood/lib/libredwoodair.dylib ] || \
+          [ "${RWA:-0}" -gt 0 ] || { echo "::error::libannibaleair.dylib exports no rwa_* at all"; exit 1; }
+          [ "$(otool -D "$O" | sed -n 2p)" = /annibale/lib/libannibaleair.dylib ] || \
             { echo "::error::wrong install name"; exit 1; }
           /usr/bin/codesign -dv "$O" 2>&1 | head -5
-          shasum -a 256 "$O" | tee /tmp/mesa/out/libredwoodair.sha256
+          shasum -a 256 "$O" | tee /tmp/mesa/out/libannibaleair.sha256
           ls -l /tmp/mesa/out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libredwoodair-arm64e
+          name: libannibaleair-arm64e
           path: /tmp/mesa/out/
           if-no-files-found: error
 
@@ -280,7 +292,7 @@ jobs:
           git config user.email actions@github.com
           git checkout -q -b air-artifacts
           git add -A
-          git commit -qm "libredwoodair: mesa $MESA_VERSION, $(shasum -a 256 libredwoodair.dylib | cut -d' ' -f1)"
+          git commit -qm "libannibaleair: mesa $MESA_VERSION, $(shasum -a 256 libannibaleair.dylib | cut -d' ' -f1)"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -q -f origin air-artifacts
           echo "air-artifacts: $(git rev-parse --short HEAD)"
