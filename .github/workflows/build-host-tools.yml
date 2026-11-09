@@ -159,9 +159,9 @@ jobs:
           xcodebuild -version
       - name: Fetch userland sources
         run: git clone --depth 1 --branch k90-port https://github.com/iola1999/hackios-xnu-userland.git /tmp/ul
-      - name: Ad-hoc sign the prebuilt programs and build the installer app
+      - name: Ad-hoc sign the prebuilt programs (if upstream ships any)
         run: |
-          set -e
+          set -ex
           mkdir -p /tmp/out/signed
           # Upstream ships no prebuilt/userland anymore (see the job comment):
           # sign the prebuilts only if they ever come back, and say so in the
@@ -182,6 +182,10 @@ jobs:
             echo "upstream ships no prebuilt/userland anymore; nothing to ad-hoc sign"
             rmdir /tmp/out/signed
           fi
+      - name: Build the installer app
+        run: |
+          set -ex
+          mkdir -p /tmp/out
           cd /tmp/ul/userland
           bash src/apps/build_installer.sh
           cp -a obj/AnnibaleInstaller.app /tmp/out/
