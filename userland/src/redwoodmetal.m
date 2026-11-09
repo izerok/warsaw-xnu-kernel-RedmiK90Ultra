@@ -3773,13 +3773,36 @@ enum {
 			         "together, so the attachment is stored and nothing is "
 			         "resolved\n", i, (unsigned long)store);
 		}
-		if (i == 0 && [attachment loadAction] == MTLLoadActionClear) {
+		/* The clear belongs to the first attachment that asks for one, not
+		 * specifically to attachment 0: an offscreen pass may leave slot 0 unused. */
+		if ([attachment loadAction] == MTLLoadActionClear && !_clears) {
 			MTLClearColor c = [attachment clearColor];
 
 			_clearColor[0] = (float)c.red;
 			_clearColor[1] = (float)c.green;
 			_clearColor[2] = (float)c.blue;
 			_clearColor[3] = (float)c.alpha;
+			/*
+			 * v85, upstream aeeef630f ("fix offscreen texture clear alpha").
+			 * CoreAnimation clears an offscreen LAYER texture with opaque black
+			 * (0,0,0,1), yet that texture is later composited BY ALPHA. Leaving
+			 * alpha at 1 makes every untouched pixel opaque black, so:
+			 *   - antialiased icon edges are premultiplied against black instead
+			 *     of the wallpaper, which is the fixed grey/white rim that makes
+			 *     icons look pasted on rather than immersed;
+			 *   - the Dock and the Liquid Glass backdrop sample that black and
+			 *     come out as flat dark grey (measured (45,45,45) since v76).
+			 * A clear whose target has no IOSurface is an offscreen layer, so
+			 * make it genuinely transparent. This is what restores the glass.
+			 */
+			if ([texture respondsToSelector:@selector(iosurface)] &&
+			    [texture iosurface] == NULL &&
+			    c.red == 0.0 && c.green == 0.0 && c.blue == 0.0 &&
+			    c.alpha == 1.0) {
+				_clearColor[3] = 0.0f;
+				RW_ONCE("v85: offscreen clear (0,0,0,1) made transparent so "
+				        "icon edges and glass backdrops blend with the wallpaper\n");
+			}
 			_clears = YES;
 		}
 	}
