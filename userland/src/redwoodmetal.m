@@ -5092,6 +5092,10 @@ controlPointIndexBufferOffset:(NSUInteger)controlPointOffset
 	id _samplers[RW_MAX_BUFFERS];
 	unsigned _highest, _highestTexture, _highestSampler;
 	BOOL _complained;
+	/* what -setThreadgroupMemoryLength:atIndex: gave for threadgroup buffer 0, in bytes;
+	 * compute_average_luma, one of CoreAnimation's kernels, needs this and every miss
+	 * was a whole command buffer in error (v78) */
+	NSUInteger _threadgroupMemoryLength;
 }
 
 - (instancetype)initWithRedwoodCommandBuffer:(RedwoodMetalCommandBuffer *)commandBuffer
@@ -5230,6 +5234,7 @@ controlPointIndexBufferOffset:(NSUInteger)controlPointOffset
 	work->size[0] = (unsigned)size.width;
 	work->size[1] = (unsigned)size.height;
 	work->size[2] = (unsigned)size.depth;
+	work->threadgroupBytes = (unsigned)_threadgroupMemoryLength;
 	[_commandBuffer recordWork:work];
 	[work release];
 }
@@ -5266,7 +5271,19 @@ controlPointIndexBufferOffset:(NSUInteger)controlPointOffset
 - (void)memoryBarrierWithScope:(NSUInteger)scope { (void)scope; }
 - (void)setThreadgroupMemoryLength:(NSUInteger)length atIndex:(NSUInteger)index
 {
-	(void)length; (void)index;   /* only what the shader declares is given, for now */
+	/* The one length rwa_dispatch_threadgroup carries is threadgroup buffer 0's; Metal
+	 * itself only has one dynamic threadgroup buffer, so anything else is out of
+	 * contract. compute_average_luma sets index 0 and its dispatch ran with nothing
+	 * before, which failed the whole command buffer (v78). */
+	if (index == 0) {
+		_threadgroupMemoryLength = length;
+		return;
+	}
+	if (!_complained) {
+		rw_print("threadgroup buffer %lu has no slot in this driver's dispatch, "
+		         "which carries index 0 only\n", (unsigned long)index);
+		_complained = YES;
+	}
 }
 
 /*
