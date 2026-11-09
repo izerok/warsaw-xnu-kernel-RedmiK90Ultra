@@ -91,7 +91,12 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 		mesa.texture_destroy(texture);
 		return nil;
 	}
-	_owner = device;
+	/* v85 / upstream 1bd058978: a texture must keep its device alive.
+	 * IconRendering.HardwareTexture keeps a WEAK reference to the Metal
+	 * device; when the autorelease pool drained it before the texture was
+	 * destroyed, that weak reference was zeroed and swift_unknownObject-
+	 * WeakLoadStrong returned nil -> SIGTRAP in iconservicesagent (v74-v76). */
+	_owner = [device retain];
 	_texture = texture;
 	_shape = *shape;
 	_iosurface = surface ? CFRetain(surface) : NULL;
@@ -108,6 +113,7 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 	if (_iosurface != NULL) {
 		CFRelease(_iosurface);
 	}
+	[_owner release];   /* AIR resources need the device through destruction. */
 	[super dealloc];
 }
 
