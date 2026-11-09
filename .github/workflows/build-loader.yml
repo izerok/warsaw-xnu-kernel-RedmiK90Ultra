@@ -9,6 +9,10 @@ on:
       - 'xnuloader/**'
       - '.github/workflows/build-loader.yml'
 
+# 产物要强推到 loader-artifacts 孤儿分支（见最后一步），所以要 contents: write。
+permissions:
+  contents: write
+
 jobs:
   build-phone-loader:
     # 22.04 的 clang 14 编这个 target 会报 "fixup value out of range"；
@@ -55,3 +59,25 @@ jobs:
           name: loader-phone-warsaw
           path: xnuloader/loader-phone.efi
           if-no-files-found: error
+
+      # 与 build-kernel / build-mesa-air 同一模式：artifact 接口需要构建主机没有的
+      # token，孤儿分支用 codeload / Contents API 就能取回。分支每轮强推替换，
+      # 不累积历史。产物只有我们自己的 loader，不含任何 Apple 内容。
+      - name: 把 loader 放到能长期取到的分支
+        run: |
+          set -euo pipefail
+          O=/tmp/loader-out
+          mkdir -p "$O"
+          cp xnuloader/loader-phone.efi "$O/"
+          (cd "$O" && sha256sum loader-phone.efi > loader-phone.sha256)
+          ls -l "$O"
+          cd "$O"
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b loader-artifacts
+          git add -A
+          git commit -qm "loader: ${{ github.sha }}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin loader-artifacts
+          echo "loader-artifacts: $(git rev-parse --short HEAD)"
