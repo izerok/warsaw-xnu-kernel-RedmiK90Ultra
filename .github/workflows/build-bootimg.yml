@@ -1,0 +1,176 @@
+name: build-bootimg
+
+# 拼装段：把 CI 已产出的 loader 与公开 Mu 树的 BootShim 拼成上机用的
+# warsaw-boot.img（fastboot boot 的那个镜像）。系统盘 system26.apfs 从来不进
+# 任何镜像（开机时单独 stage），本 workflow 也不碰它。
+#
+# 红线：产物不含任何 Apple 系统内容（无 IPSW、无 system26.apfs、无
+# root26.apfs、无 kernelcache、无厂商固件）。本 workflow 的产物只有：
+# 自有 loader 的 XNUP 容器、开源 Mu 树的 BootShim、已入仓的 warsaw.dtb，
+# 以及（FD 到位时）三者拼成的 boot.img。
+#
+# FD 的卡点（2026-11-09 盘点结论，见 goals 盘点文档）：SILICIUM_UEFI.fd 需要
+# Mu 树的 warsawPkg 平台包，该包从未公开（全 GitHub 代码搜索为 0，公开 Mu 仓
+# iola1999/hackios-mu-silicium@k90-port 只有 annibalePkg）。所以：
+#   - 若 fork 存在投放分支 warsaw-fd 且根目录有 SILICIUM_UEFI.fd（须恰
+#     3,145,728 字节 = FD_SIZE），本 workflow 校验后自动完成拼装；
+#   - 否则只产出中间件（BootShim.bin + usb-payload.bin + warsaw.dtb +
+#     BUILD-INFO.txt）并明确标注缺 FD，不以任何其它 FD 冒充。
+# 切勿把 annibale 的 FD 改名投放：内存图与面板初始化是 annibale 的，上机危险。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # 与 common/devices/warsaw.conf 逐项一致（改设备参数时两边同改）
+  FD_BASE: "0xa7100000"
+  FD_SIZE: "0x300000"
+  PAYLOAD_BASE: "0xf0000000"
+  PAYLOAD_CAP: "0x03700000"
+  UEFI_TARGET: warsaw
+  MU_REPO: https://github.com/iola1999/hackios-mu-silicium.git
+  MU_BRANCH: k90-port
+  FD_BRANCH: warsaw-fd
+  FD_SIZE_BYTES: "3145728"
+
+jobs:
+  bootimg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装工具（clang / llvm-objcopy / make / python3）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang llvm lld make python3 git
+          clang --version | head -1
+          command -v llvm-objcopy && command -v make && python3 --version
+
+      - name: 稀疏克隆 Mu 树（只要 BootShim 与 Resources）
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --filter=blob:none --sparse --branch "$MU_BRANCH" "$MU_REPO" Mu-Silicium
+          git -C Mu-Silicium sparse-checkout set BootShim Resources
+          echo "Mu HEAD: $(git -C Mu-Silicium rev-parse HEAD)"
+          ls Mu-Silicium/BootShim Mu-Silicium/Resources/Scripts
+
+      - name: 现编 loader（warsaw 专用，与 build-loader 同参）
+        env:
+          EXTRA_CFLAGS: -DDIRECT_PHONE_PLAT -DWARSAW
+          BUILD_ID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash xnuloader/build.sh
+          sha256sum xnuloader/loader-phone.efi
+          ls -la xnuloader/loader-phone.efi
+
+      - name: 拼 usb-payload（容器里只有自有 loader）
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python3 xnuloader/mkpayload.py -o out/usb-payload.bin \
+            loader.efi=xnuloader/loader-phone.efi --usb
+          ls -la out/usb-payload.bin
+
+      - name: 取 FD（投放分支 warsaw-fd，可选）
+        id: fd
+        run: |
+          set -euo pipefail
+          FD_PATH=""
+          if git ls-remote --exit-code --heads "https://github.com/${{ github.repository }}.git" "$FD_BRANCH" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "$FD_BRANCH" "https://github.com/${{ github.repository }}.git" /tmp/fd-drop
+            if [ -f /tmp/fd-drop/SILICIUM_UEFI.fd ]; then
+              SZ=$(stat -c %s /tmp/fd-drop/SILICIUM_UEFI.fd)
+              echo "投放 FD 大小: $SZ（须为 $FD_SIZE_BYTES）"
+              if [ "$SZ" = "$FD_SIZE_BYTES" ]; then
+                FD_PATH=/tmp/fd-drop/SILICIUM_UEFI.fd
+                sha256sum "$FD_PATH"
+              else
+                echo "::error::SILICIUM_UEFI.fd 大小 $SZ != $FD_SIZE_BYTES，拒绝使用"
+                exit 1
+              fi
+            fi
+          fi
+          if [ -z "$FD_PATH" ]; then
+            echo "本轮无可用 FD：只产出中间件，warsaw-boot.img 留待 FD 投放后重跑。"
+          fi
+          echo "path=$FD_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: 现编 BootShim（warsaw 参数，与 mkxnuimg 内部调用一致）
+        run: |
+          set -euo pipefail
+          make -C Mu-Silicium/BootShim REQUIRES_KERNEL_HEADER=1 \
+            FD_BASE="$FD_BASE" FD_SIZE="$FD_SIZE" \
+            "CFLAGS=--target=aarch64-linux-gnu -DPAYLOAD_BASE=$PAYLOAD_BASE -DPAYLOAD_CAP=$PAYLOAD_CAP"
+          cp Mu-Silicium/BootShim/BootShim.bin out/
+          ls -la out/BootShim.bin
+
+      - name: 拼 warsaw-boot.img（仅 FD 在位时）
+        if: steps.fd.outputs.path != ''
+        env:
+          UEFI_FD: ${{ steps.fd.outputs.path }}
+          DTB: common/devices/warsaw.dtb
+        run: |
+          set -euo pipefail
+          python3 mkxnuimg.py -p out/usb-payload.bin -o out/warsaw-boot.img
+          ls -la out/warsaw-boot.img
+
+      - name: 产物清单与校验（BUILD-INFO）
+        run: |
+          set -euo pipefail
+          cp common/devices/warsaw.dtb out/
+          {
+            echo "warsaw bootimg chain - build info"
+            echo "time (UTC):   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "source repo:  ${{ github.repository }} @ ${{ github.sha }}"
+            echo "Mu tree:      $MU_REPO @ $MU_BRANCH $(git -C Mu-Silicium rev-parse HEAD)"
+            echo "FD base/size: $FD_BASE / $FD_SIZE; payload base/cap: $PAYLOAD_BASE / $PAYLOAD_CAP"
+            if [ -n "${{ steps.fd.outputs.path }}" ]; then
+              echo "FD:           provided via branch $FD_BRANCH, size + sha256 verified in-log"
+              echo "warsaw-boot.img: BUILT"
+            else
+              echo "FD:           MISSING (warsawPkg unpublished) - warsaw-boot.img NOT built"
+              echo "next step:    build SILICIUM_UEFI.fd (exactly 3145728 bytes) from a Mu tree"
+              echo "              carrying warsawPkg, place it on branch $FD_BRANCH, re-run this workflow."
+            fi
+            echo "contents:     open-source builds + in-repo warsaw.dtb only; no Apple system"
+            echo "              content (no IPSW / system26.apfs / root26.apfs / vendor firmware)."
+          } > out/BUILD-INFO.txt
+          (cd out && sha256sum * > SHA256SUMS)
+          cat out/BUILD-INFO.txt
+          ls -la out/
+          {
+            echo "## build-bootimg"
+            if [ -f out/warsaw-boot.img ]; then
+              echo "- warsaw-boot.img: **built** ($(stat -c %s out/warsaw-boot.img) bytes)"
+            else
+              echo "- warsaw-boot.img: **not built — SILICIUM_UEFI.fd missing** (warsawPkg unpublished; see BUILD-INFO.txt)"
+            fi
+            echo "- intermediates on branch bootimg-artifacts"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootimg-warsaw
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+      # 与其它产物线同一模式：孤儿分支强推，供 codeload / Contents API 取回。
+      - name: 把产物放到能长期取到的分支
+        run: |
+          set -euo pipefail
+          cd out
+          git init -q
+          git config user.name github-actions
+          git config user.email actions@github.com
+          git checkout -q -b bootimg-artifacts
+          git add -A
+          git commit -qm "bootimg: ${{ github.sha }}"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -q -f origin bootimg-artifacts
+          echo "bootimg-artifacts: $(git rev-parse --short HEAD)"
