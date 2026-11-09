@@ -216,13 +216,11 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 
 		k = snprintf(line, sizeof(line),
 		    "rwm REGS: x0=%#llx x1=%#llx x2=%#llx x19=%#llx x20=%#llx x21=%#llx "
-		    "x22=%#llx x23=%#llx lr=%#llx sp=%#llx\n",
+		    "x22=%#llx x23=%#llx\n",
 		    (unsigned long long)x[0], (unsigned long long)x[1],
 		    (unsigned long long)x[2], (unsigned long long)x[19],
 		    (unsigned long long)x[20], (unsigned long long)x[21],
-		    (unsigned long long)x[22], (unsigned long long)x[23],
-		    (unsigned long long)uc->uc_mcontext->__ss.__lr,
-		    (unsigned long long)uc->uc_mcontext->__ss.__sp);
+		    (unsigned long long)x[22], (unsigned long long)x[23]);
 		(void)write(2, line, (size_t)k);
 	}
 	signal(number, SIG_DFL);
