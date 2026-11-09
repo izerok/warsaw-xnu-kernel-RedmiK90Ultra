@@ -141,10 +141,14 @@ jobs:
     # thin arm64 Mach-O files with __LINKEDIT, so macOS can ad hoc sign them and
     # we can copy the signed copies into the local tree. iOS 26 launchd refuses
     # to start a job whose program is not a platform binary; kern_minimac.c takes
-    # any ad hoc signed binary for one. This job also builds RedwoodInstaller.app,
-    # whose src/build_installer.sh needs Apple clang and codesign.
+    # any ad hoc signed binary for one. This job also builds the installer app,
+    # whose build script needs Apple clang and codesign.
     # Nothing in here is an Apple file: the sources and prebuilt programs come
     # from the public hackios-xnu-userland repository.
+    # 2026-11-09 drift (fork run 42624407318 failed here): upstream deleted its
+    # prebuilt/ tree outright and, in the userland restructure, moved the
+    # installer script to src/apps/build_installer.sh and renamed the product
+    # to AnnibaleInstaller.app (+ an appinst CLI). The step below follows.
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -155,28 +159,36 @@ jobs:
           xcodebuild -version
       - name: Fetch userland sources
         run: git clone --depth 1 --branch k90-port https://github.com/iola1999/hackios-xnu-userland.git /tmp/ul
-      - name: Ad-hoc sign the prebuilt programs and build RedwoodInstaller.app
+      - name: Ad-hoc sign the prebuilt programs and build the installer app
         run: |
           set -e
           mkdir -p /tmp/out/signed
-          cp /tmp/ul/prebuilt/userland/* /tmp/out/signed/
-          for f in /tmp/out/signed/*; do
-            magic=$(od -An -tx1 -N4 "$f" | tr -d ' \n')
-            case "$magic" in
-              cffaedfe|feedfacf|cefaedfe|bebafeca|cafebabe) ;;
-              *) echo "skip (not Mach-O): $(basename "$f")"; continue ;;
-            esac
-            /usr/bin/codesign --force --sign - "$f"
-            printf '%-40s ' "$(basename "$f")"
-            /usr/bin/codesign -dv "$f" 2>&1 | grep -i 'flags=' | head -1 || true
-          done
+          # Upstream ships no prebuilt/userland anymore (see the job comment):
+          # sign the prebuilts only if they ever come back, and say so in the
+          # log when there is nothing to sign instead of dying on a dead glob.
+          if [ -d /tmp/ul/prebuilt/userland ] && [ -n "$(ls -A /tmp/ul/prebuilt/userland 2>/dev/null)" ]; then
+            cp /tmp/ul/prebuilt/userland/* /tmp/out/signed/
+            for f in /tmp/out/signed/*; do
+              magic=$(od -An -tx1 -N4 "$f" | tr -d ' \n')
+              case "$magic" in
+                cffaedfe|feedfacf|cefaedfe|bebafeca|cafebabe) ;;
+                *) echo "skip (not Mach-O): $(basename "$f")"; continue ;;
+              esac
+              /usr/bin/codesign --force --sign - "$f"
+              printf '%-40s ' "$(basename "$f")"
+              /usr/bin/codesign -dv "$f" 2>&1 | grep -i 'flags=' | head -1 || true
+            done
+          else
+            echo "upstream ships no prebuilt/userland anymore; nothing to ad-hoc sign"
+            rmdir /tmp/out/signed
+          fi
           cd /tmp/ul/userland
-          mkdir -p obj
-          bash src/build_installer.sh
-          cp -a obj/RedwoodInstaller.app /tmp/out/
-          echo "--- RedwoodInstaller.app ---"
-          ls -l /tmp/out/RedwoodInstaller.app/
-          /usr/bin/codesign -dv /tmp/out/RedwoodInstaller.app/RedwoodInstaller 2>&1 | head -6
+          bash src/apps/build_installer.sh
+          cp -a obj/AnnibaleInstaller.app /tmp/out/
+          cp -a obj/appinst /tmp/out/
+          echo "--- AnnibaleInstaller.app ---"
+          ls -l /tmp/out/AnnibaleInstaller.app/
+          /usr/bin/codesign -dv /tmp/out/AnnibaleInstaller.app/AnnibaleInstaller 2>&1 | head -6
       - uses: actions/upload-artifact@v4
         with:
           name: adhoc-userland
