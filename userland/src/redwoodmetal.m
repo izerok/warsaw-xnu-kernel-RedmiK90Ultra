@@ -160,6 +160,24 @@ rwm_crash_logger(int number, siginfo_t *info, void *context)
 	}
 	line[k++] = '\n';
 	(void)write(2, line, (size_t)k);
+	/* v73: name the module and offset of every frame. Raw addresses alone cannot say
+	 * whether the trap is Apple's Metal validating something we handed it or our own
+	 * driver; dladdr answers that in the same line. */
+	k = snprintf(line, sizeof(line), "rwm FRAMES:");
+	for (int i = 0; i < n && k < (int)sizeof(line) - 96; i++) {
+		Dl_info info;
+		const char *file = NULL;
+		if (dladdr(frames[i], &info) && info.dli_fname) {
+			file = strrchr(info.dli_fname, '/');
+			file = file ? file + 1 : info.dli_fname;
+			k += snprintf(line + k, sizeof(line) - (size_t)k, " %s+0x%lx",
+			    file, (unsigned long)((uintptr_t)frames[i] - (uintptr_t)info.dli_fbase));
+		} else {
+			k += snprintf(line + k, sizeof(line) - (size_t)k, " ?%p", frames[i]);
+		}
+	}
+	line[k++] = '\n';
+	(void)write(2, line, (size_t)k);
 	signal(number, SIG_DFL);
 	raise(number);
 }
