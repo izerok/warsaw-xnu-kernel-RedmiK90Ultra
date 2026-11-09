@@ -141,9 +141,13 @@ ADB_DIR=/path/to/platform-tools OBSERVE=600 SHOTS="90 240 420 570" OUTDIR=$PWD/o
 - **对比跨轮截图要挑对帧**：`once-v86b/snaps/screen-final.png` 是设置 App 不是主屏；主屏基线用 `screen-105.png`。另外要避开背光瞬态暗帧（v86restore 的 `screen-105`、v92 的 `screen-70` 都是），它们和主屏差 90%+ 但不是回归。
 - **`oem stop` 后 framebuffer 不清屏**：loader 停内核后屏幕会一直冻结在最后一帧（曾误以为桌面还活着）。要恢复必须重新 `fastboot boot`；`reboot bootloader` 后设备常先回 Android，取证脚本会自动 `adb reboot bootloader`。
 
-## 默认分支
+## 默认分支与发布
 
-`main`。所有提交在 `main` 上线性前进。tags 标记关键版本：`v35`（首次上屏）、`v37`（锁屏前进）、`v86`（原生分辨率基线）、`v92`（图标样式定稿）。
+`main`。所有提交在 `main` 上线性前进。
+
+首个 Release：[**v92 — iOS 26 主屏桌面（交接快照 · 2026-11-09）**](https://github.com/jabarin123/warsaw-xnu-kernel-RedmiK90Ultra/releases/tag/v92)（tag `v92`，Pre-release）。随附源码自动打包、交接文档包（README + `STATUS-2026-11-09.md` + `tap-burst.py`）与 v92 真机主屏截图；**不含** Apple 系统内容、IPSW、厂商固件、系统盘镜像或 payload 二进制。
+
+历史关键节点仅在文档里记录、未单独打 tag：`v35` 首次上屏、`v37` 锁屏前进、`v86` 原生分辨率基线、`v92` 图标样式定稿。
 
 ## 许可证
 
