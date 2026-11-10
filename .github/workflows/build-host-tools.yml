@@ -149,6 +149,13 @@ jobs:
     # prebuilt/ tree outright and, in the userland restructure, moved the
     # installer script to src/apps/build_installer.sh and renamed the product
     # to AnnibaleInstaller.app (+ an appinst CLI). The step below follows.
+    # 2026-11-10 drift #3 (fork run 42641426535, step 5 exit 127): upstream
+    # 5507d32 ("Integrate TrollStore.app and trollstorehelper into userland
+    # build") deleted the installer sources outright -- build_installer.sh,
+    # installer_app.m, appinst.m and their plists/entitlements are gone from
+    # k90-port HEAD, and upstream's own build.sh just guards the call with
+    # [ -f ... ] and moves on. Tracking HEAD is what killed step 5, so the
+    # fetch step below pins the last pre-deletion commit instead.
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -158,7 +165,19 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
           xcodebuild -version
       - name: Fetch userland sources
-        run: git clone --depth 1 --branch k90-port https://github.com/iola1999/hackios-xnu-userland.git /tmp/ul
+        run: |
+          # Pinned to an exact upstream commit, NOT the moving k90-port HEAD:
+          # 5507d32 deleted the installer sources this job builds (see the job
+          # comment), and step 5 died with exit 127 on run 42641426535 -- the
+          # job log reads "bash: src/apps/build_installer.sh: No such file or
+          # directory". 134708e is that commit's direct parent, the last
+          # upstream state with the installer present. GitHub serves a
+          # reachable commit by SHA, so a shallow fetch of the pin is exact.
+          git init /tmp/ul
+          git -C /tmp/ul remote add origin https://github.com/iola1999/hackios-xnu-userland.git
+          git -C /tmp/ul fetch --depth 1 origin 134708e414db7e1a1f20d4059266a129e12e2495
+          git -C /tmp/ul checkout -q FETCH_HEAD
+          git -C /tmp/ul log -1 --oneline
       - name: Ad-hoc sign the prebuilt programs (if upstream ships any)
         run: |
           set -ex
