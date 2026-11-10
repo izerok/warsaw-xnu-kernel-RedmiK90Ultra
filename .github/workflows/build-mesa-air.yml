@@ -67,7 +67,10 @@ jobs:
         # macOS ships 2.3. gpatch is GNU patch, because mk-mesa.sh's patch loop
         # uses --batch and --no-backup-if-mismatch, which BSD patch rejects.
         # meson is pinned to 1.12.1: 26.x requires >= 1.4 and the fork's rebase
-        # notes were taken against 1.12.1.
+        # notes were taken against 1.12.1. The other three are pinned too
+        # (2026-11-10, phase-2 pinning): mako/pyyaml/packaging were the last
+        # unpinned fetches in this workflow; the versions below are what
+        # PyPI served on the day of the last green run (42753259830).
         run: |
           set -euo pipefail
           brew install bison flex gpatch ninja
@@ -77,15 +80,26 @@ jobs:
           echo "HOST_BIN=$BISON_DIR:$FLEX_DIR:$GPATCH_DIR" >> "$GITHUB_ENV"
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip -q install --upgrade pip
-          /tmp/venv/bin/pip -q install mako pyyaml packaging "meson==1.12.1"
+          /tmp/venv/bin/pip -q install "mako==1.4.3" "pyyaml==6.0.3" "packaging==26.3" "meson==1.12.1"
           /tmp/venv/bin/meson --version
           PATH="$BISON_DIR:$FLEX_DIR:$GPATCH_DIR:$PATH" gpatch --version | head -1
 
       - name: Fetch the sources and the patch set
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch k90-port \
-            https://github.com/iola1999/hackios-xnu-userland.git /tmp/u
+          # Pinned to an exact upstream commit, NOT the moving k90-port HEAD
+          # (2026-11-10, phase-2 pinning): e052bd49 was the branch HEAD when
+          # this workflow last built green -- fork run 42753259830
+          # (2026-11-10) cloned the branch while it sat at this commit, and
+          # the branch has not moved since (2026-11-09T16:57Z). The patch
+          # set under tools/mesa is the input that matters here; tracking
+          # HEAD is what let the redwood-drm -> annibale-drm rename break
+          # step 5 of the first fork run.
+          git init /tmp/u
+          git -C /tmp/u remote add origin https://github.com/iola1999/hackios-xnu-userland.git
+          git -C /tmp/u fetch --depth 1 origin e052bd494cfedb9b51b5fb6e7848124776c18779
+          git -C /tmp/u checkout -q FETCH_HEAD
+          git -C /tmp/u log -1 --oneline
           echo "--- 25.0.7 patch set: $(ls /tmp/u/tools/mesa/*.patch | wc -l) files ---"
           echo "--- rebase-26 layer: $(ls /tmp/u/tools/mesa/rebase-26/*.patch | wc -l) files ---"
           ls /tmp/u/tools/mesa/rebase-26/
