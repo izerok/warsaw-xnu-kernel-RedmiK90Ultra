@@ -783,6 +783,77 @@ sb26_install_crash_logger(void)
  * v68 keeps the reply the async API itself hands back for a dead peer — an
  * XPC_TYPE_ERROR object — instead of filtering it down to NULL (v67 died on that).
  * --------------------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------------------
+ * H2 (warsaw fork, phase 2): the iconservices cold wait is tiered by generation.
+ * sb26_icons_cold_ms (default 300) is v70's short window, unchanged for repeat
+ * cold requests. sb26_icons_first_ms (default 1500) is the window for a key's
+ * FIRST generation -- and even then the main thread never waits past the short
+ * window (v70's watchdog fired on the main thread; the long window must not
+ * re-create that there). A first generation that outlives its window finishes
+ * in the completion handler, which caches the real reply and posts
+ * com.redwood.icons so the fill re-runs and the icon lands; the caller meanwhile
+ * takes the same never-NULL fallback as any other timeout. Both values are
+ * tuned by /redwood/etc/glass.conf (keys icon_cold_ms / icon_first_ms, parsed
+ * by sb26_glass_conf() further down); the defaults here apply until its first
+ * parse and equal the shipped values.
+ * --------------------------------------------------------------------------------------- */
+static int sb26_icons_cold_ms = 300;
+static int sb26_icons_first_ms = 1500;
+
+#define SB26_ICONS_GEN_MAX 64
+static struct { char key[72]; } sb26_icons_gen[SB26_ICONS_GEN_MAX];
+static unsigned sb26_icons_gen_n;
+static pthread_mutex_t sb26_icons_gen_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* 1 when this call starts the key's first generation; 0 when a generation
+ * for it is already in flight or has finished. Presence is the whole state:
+ * a key leaves the short-window tier exactly once, whatever the outcome. */
+static int
+sb26_icons_gen_begin(const char *key)
+{
+    int first = 0;
+    unsigned i;
+    pthread_mutex_lock(&sb26_icons_gen_lock);
+    for (i = 0; i < sb26_icons_gen_n; i++) {
+        if (!strcmp(sb26_icons_gen[i].key, key)) {
+            pthread_mutex_unlock(&sb26_icons_gen_lock);
+            return 0;
+        }
+    }
+    if (sb26_icons_gen_n < SB26_ICONS_GEN_MAX) {
+        snprintf(sb26_icons_gen[sb26_icons_gen_n].key,
+            sizeof(sb26_icons_gen[0].key), "%s", key);
+        sb26_icons_gen_n++;
+        first = 1;
+    }
+    pthread_mutex_unlock(&sb26_icons_gen_lock);
+    return first;
+}
+
+/* One in-flight iconservices generation, shared by the waiting caller and
+ * the async completion handler through a two-reference count: each side
+ * drops its reference exactly once, and the drop that reaches zero releases
+ * the reply (unless the caller took it), the semaphore and the context.
+ * "detached" is set by a caller that timed out and returned a fallback; a
+ * detached first-generation completion also posts the self-refresh. */
+struct sb26_icons_ctx {
+    char key[72];
+    int first;
+    atomic_int refs;
+    atomic_int detached;
+    dispatch_semaphore_t done;
+    xpc_object_t reply;
+};
+
+static void
+sb26_icons_ctx_drop(struct sb26_icons_ctx *ctx)
+{
+    if (atomic_fetch_sub(&ctx->refs, 1) != 1) return;
+    if (ctx->reply) xpc_release(ctx->reply);
+    dispatch_release(ctx->done);
+    free(ctx);
+}
+
 #define SB26_XPC_CACHE_MAX 64
 static struct { char key[72]; xpc_object_t reply; } sb26_xpc_cache[SB26_XPC_CACHE_MAX];
 static unsigned sb26_xpc_cache_n;
@@ -979,20 +1050,42 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
      * request cost a full 4 s and the main thread never answered. So: a request
      * whose key is already cached returns at once (a tap re-asks for icons it
      * already drew), and a cold one waits 300 ms — a live agent answers in tens of
-     * milliseconds, and no UI thread is ever held longer than a few frames. */
+     * milliseconds, and no UI thread is ever held longer than a few frames.
+     *
+     * H2 (warsaw fork): the cold wait is now tiered by generation (see the
+     * sb26_icons_gen table above). A key's first generation waits up to
+     * icon_first_ms off the main thread -- the main thread itself stays capped
+     * at icon_cold_ms, because v70's watchdog fired on it -- and a first
+     * generation that outlives even that window finishes in the completion
+     * handler: the reply is cached there and com.redwood.icons is posted, so
+     * the fill re-runs and the icon lands without any thread having waited
+     * for it. Repeat cold requests keep exactly the wait above. */
     if (is_icons) {
         char key[72];
         sb26_xpc_cache_key(message, key, sizeof(key));
         xpc_object_t hit = sb26_xpc_cache_get(key);
-        __block xpc_object_t async_reply = NULL;
-        dispatch_semaphore_t done = NULL;
+        struct sb26_icons_ctx *ctx;
+        long long wait_ms;
 
         if (hit) {
             reply = xpc_retain(hit);
             fprintf(stderr, "sb26 xpc sync #%u CACHEHIT name=%s key=%.24s\n", n, name, key);
             goto done_icons;
         }
-        done = dispatch_semaphore_create(0);
+        ctx = (struct sb26_icons_ctx *)calloc(1, sizeof(*ctx));
+        if (!ctx) {
+            /* Nowhere to keep an in-flight reply: answer with the one shape
+             * that always decodes rather than NULL. */
+            reply = xpc_dictionary_create(NULL, NULL, 0);
+            goto done_icons;
+        }
+        snprintf(ctx->key, sizeof(ctx->key), "%s", key);
+        ctx->first = sb26_icons_gen_begin(key);
+        atomic_init(&ctx->refs, 2);
+        ctx->done = dispatch_semaphore_create(0);
+        wait_ms = ctx->first ? sb26_icons_first_ms : sb26_icons_cold_ms;
+        if (pthread_main_np() && wait_ms > sb26_icons_cold_ms)
+            wait_ms = sb26_icons_cold_ms;
         xpc_connection_send_message_with_reply(connection, message,
             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
             ^(xpc_object_t rep) {
@@ -1001,16 +1094,32 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
                  * error became NULL and NSXPCConnection aborted SpringBoard ("root
                  * object is not an XPC dictionary", 12 times in one boot). Keep every
                  * non-NULL reply, errors included; the cache still stores dictionaries
-                 * only. The array "key" must stay out of the block (clang rejects
-                 * capturing one). */
+                 * only. The key lives on the heap context, not a stack array:
+                 * clang rejects capturing one, and under H2 a first generation
+                 * may outlive its caller. */
                 if (rep) {
-                    async_reply = xpc_retain(rep);
+                    ctx->reply = xpc_retain(rep);
                 }
-                dispatch_semaphore_signal(done);
+                if (ctx->first && ctx->reply &&
+                    xpc_get_type(ctx->reply) == XPC_TYPE_DICTIONARY)
+                    sb26_xpc_cache_put(ctx->key, ctx->reply);
+                if (atomic_load(&ctx->detached) && ctx->first && ctx->reply)
+                    notify_post("com.redwood.icons");
+                if (atomic_fetch_sub(&ctx->refs, 1) == 1) {
+                    /* The caller already took a fallback and dropped its
+                     * reference: this completion owns the context. */
+                    if (ctx->reply) xpc_release(ctx->reply);
+                    dispatch_release(ctx->done);
+                    free(ctx);
+                    return;
+                }
+                dispatch_semaphore_signal(ctx->done);
             });
-        if (dispatch_semaphore_wait(done,
-                dispatch_time(DISPATCH_TIME_NOW, 300LL * NSEC_PER_MSEC)) == 0) {
-            reply = async_reply;
+        if (dispatch_semaphore_wait(ctx->done,
+                dispatch_time(DISPATCH_TIME_NOW,
+                    (int64_t)wait_ms * (int64_t)NSEC_PER_MSEC)) == 0) {
+            reply = ctx->reply;
+            ctx->reply = NULL;
             if (reply) {
                 sb26_xpc_cache_put(key, reply);
             } else {
@@ -1022,18 +1131,23 @@ sb26_hook_xpc_sync(xpc_connection_t connection, xpc_object_t message)
                 fprintf(stderr, "sb26 xpc sync #%u NULLREPLY name=%s key=%.24s cached=%d\n",
                     n, name, key, sb26_xpc_cache_n != 0);
             }
+            sb26_icons_ctx_drop(ctx);
         } else {
             /* NSXPCConnection requires a dictionary: NULL aborts SpringBoard with
              * "root object is not an XPC dictionary" (v66). Replay a real reply of
              * the same icon request when one was ever captured; if this key is cold,
-             * replay the newest captured one (wrong icon beats a dead SpringBoard). */
+             * replay the newest captured one (wrong icon beats a dead SpringBoard).
+             * H2: a first generation is NOT abandoned here -- the handler above
+             * caches its reply whenever it lands and posts com.redwood.icons. */
             reply = sb26_xpc_cache_get(key);
             if (!reply) reply = sb26_xpc_cache_any();
             reply = reply ? xpc_retain(reply) : xpc_dictionary_create(NULL, NULL, 0);
-            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d\n",
-                n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY);
+            fprintf(stderr, "sb26 xpc sync #%u TIMEOUT name=%s key=%.24s cached=%d first=%d wait=%lld\n",
+                n, name, key, reply != NULL && xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                ctx->first, wait_ms);
+            atomic_store(&ctx->detached, 1);
+            sb26_icons_ctx_drop(ctx);
         }
-        if (done) dispatch_release(done);
 done_icons:
         ;
     } else {
@@ -1112,12 +1226,17 @@ install_powerdown_hooks(void)
  * object graph is printed once so a failed lookup tells us what 23G90 answers.
  */
 static unsigned sb26_icons_seen, sb26_icons_filled, sb26_icons_refreshed,
-                sb26_icons_no_path, sb26_icons_no_image;
+                sb26_icons_no_path, sb26_icons_no_image, sb26_icons_skipped;
 static int sb26_icon_diag_done;
 /* SBIconImageView objects are recycled: a view that showed Weather can be moved under the Mail
  * label. Remember which bundle supplied the artwork and keep the decoded UIImage alive, so a
  * relabelled view gets the right picture without decoding the PNG again on every pass. */
 static char sb26_icon_key, sb26_icon_image_key;
+/* H1: the image sb26_fill_one_icon last handed to setContents:, the file the
+ * artwork came from, and the stamp (glass config version + source stat) under
+ * which it was put there. A later pass whose stamp still matches and whose
+ * layer still holds exactly that image has nothing to do for the view. */
+static char sb26_icon_set_key, sb26_icon_src_key, sb26_icon_stamp_key;
 
 static id
 sb26_ask(id object, const char *name)
@@ -1217,40 +1336,109 @@ static float glass_widget     = 0.34f;
 static int   glass_on         = 1;
 static int   glass_conf_read;
 
-static void
-sb26_glass_conf(void)
-{
-    FILE *f;
-    char line[256];
-    if (glass_conf_read) return;
-    glass_conf_read = 1;
-    f = fopen("/redwood/etc/glass.conf", "r");
-    if (!f) {
-        fprintf(stderr, "sb26 glass: no /redwood/etc/glass.conf, using defaults\n");
-        return;
-    }
-    while (fgets(line, sizeof(line), f)) {
-        char key[64];
-        float value;
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-        if (sscanf(line, " %63[^= \t] = %f", key, &value) != 2) continue;
-        if (!strcmp(key, "icon_color")) glass_icon_color = value;
-        else if (!strcmp(key, "icon_white")) glass_icon_white = value;
-        else if (!strcmp(key, "dock")) glass_dock = value;
-        else if (!strcmp(key, "search")) glass_search = value;
-        else if (!strcmp(key, "widget")) glass_widget = value;
-        else if (!strcmp(key, "on")) glass_on = (int)value;
-    }
-    fclose(f);
-    fprintf(stderr,
-        "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f\n",
-        glass_on, glass_icon_color, glass_icon_white, glass_dock, glass_search,
-        glass_widget);
-}
-
 struct sb26_glass_entry { char key[192]; id image; };
 static struct sb26_glass_entry glass_cache[64];
 static unsigned glass_used, glass_made, glass_hits, glass_failed;
+
+/* H1: the glass config version. It is bumped ONLY by a re-read that finds
+ * glass.conf's bytes actually changed, and sb26_fill_one_icon stamps every
+ * view with the version its artwork was baked under -- so a bump is exactly
+ * what makes the next pass redo a fill, and an unchanged re-read (the common
+ * com.redwood.icons notify) invalidates nothing: neither this version nor
+ * the baked-bitmap cache below it. */
+static unsigned glass_conf_version = 1;
+static unsigned long long glass_conf_hash;
+static int glass_conf_have_file;
+
+static void
+sb26_glass_defaults(void)
+{
+    glass_icon_color = 0.84f;
+    glass_icon_white = 0.30f;
+    glass_dock = 0.55f;
+    glass_search = 0.50f;
+    glass_widget = 0.34f;
+    glass_on = 1;
+    sb26_icons_cold_ms = 300;
+    sb26_icons_first_ms = 1500;
+}
+
+/* Re-read /redwood/etc/glass.conf (FNV-1a over the file's bytes decides
+ * whether anything changed). On a real change the tunables are first reset
+ * to their defaults, so the file alone decides the state -- deleting a key
+ * restores its default instead of silently keeping the value from the
+ * previous file -- and the baked transforms are dropped in this one place.
+ * The H2 wait tiers live in the same file: icon_cold_ms / icon_first_ms. */
+static void
+sb26_glass_conf_refresh(void)
+{
+    FILE *f;
+    char line[256];
+    unsigned long long hash = 1469598103934665603ULL;
+    int have = 0, c;
+
+    f = fopen("/redwood/etc/glass.conf", "r");
+    if (f) {
+        have = 1;
+        while ((c = fgetc(f)) != EOF) {
+            hash ^= (unsigned char)c;
+            hash *= 1099511628211ULL;
+        }
+        if (glass_conf_read && glass_conf_have_file &&
+            hash == glass_conf_hash) {
+            fclose(f);
+            return;   /* unchanged: keep every baked bitmap and stamp */
+        }
+        rewind(f);
+    } else if (glass_conf_read && !glass_conf_have_file) {
+        return;       /* still no file: the defaults are already in force */
+    }
+    glass_conf_version++;
+    sb26_glass_defaults();
+    if (!f) {
+        fprintf(stderr, "sb26 glass: no /redwood/etc/glass.conf, using defaults\n");
+    } else {
+        while (fgets(line, sizeof(line), f)) {
+            char key[64];
+            float value;
+            if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+            if (sscanf(line, " %63[^= \t] = %f", key, &value) != 2) continue;
+            if (!strcmp(key, "icon_color")) glass_icon_color = value;
+            else if (!strcmp(key, "icon_white")) glass_icon_white = value;
+            else if (!strcmp(key, "dock")) glass_dock = value;
+            else if (!strcmp(key, "search")) glass_search = value;
+            else if (!strcmp(key, "widget")) glass_widget = value;
+            else if (!strcmp(key, "on")) glass_on = (int)value;
+            else if (!strcmp(key, "icon_cold_ms"))
+                sb26_icons_cold_ms = (int)(value + 0.5f);
+            else if (!strcmp(key, "icon_first_ms"))
+                sb26_icons_first_ms = (int)(value + 0.5f);
+        }
+        fclose(f);
+        if (sb26_icons_cold_ms < 25) sb26_icons_cold_ms = 25;
+        if (sb26_icons_cold_ms > 5000) sb26_icons_cold_ms = 5000;
+        if (sb26_icons_first_ms < sb26_icons_cold_ms)
+            sb26_icons_first_ms = sb26_icons_cold_ms;
+        if (sb26_icons_first_ms > 10000) sb26_icons_first_ms = 10000;
+        fprintf(stderr,
+            "sb26 glass: conf on=%d icon=%.2f/%.2f dock=%.2f search=%.2f widget=%.2f"
+            " cold=%d first=%d ver=%u\n",
+            glass_on, glass_icon_color, glass_icon_white, glass_dock, glass_search,
+            glass_widget, sb26_icons_cold_ms, sb26_icons_first_ms,
+            glass_conf_version);
+    }
+    glass_conf_read = 1;
+    glass_conf_have_file = have;
+    glass_conf_hash = hash;
+    glass_used = 0;   /* the one place baked transforms are invalidated */
+}
+
+static void
+sb26_glass_conf(void)
+{
+    if (glass_conf_read) return;
+    sb26_glass_conf_refresh();
+}
 
 /* The CGImage we hand to CALayer is cached per bundle: sb26_fill_one_icon runs
  * nine times in the first 150 s and on every com.redwood.icons notify. */
@@ -1280,6 +1468,29 @@ sb26_glass_image(const char *key, id src)
     w = CGImageGetWidth(cg);
     h = CGImageGetHeight(cg);
     if (!w || !h || w > 1024 || h > 1024) { glass_failed++; return src; }
+    /* H1 defense: everything below is written against one input shape --
+     * 8-bit, 32-bit-per-pixel RGB with the alpha (if any) in the last
+     * channel. The inputs are whatever iconservices or the PNG decoder
+     * produced; a grayscale, palette, 16-bit or non-RGB image does not meet
+     * that assumption, and an unexpected shape is precisely what a bitmap
+     * transform must never guess at inside SpringBoard (the transform is
+     * the prime suspect for v92's one SIGNAL 5 -- n=1, unproven; see the
+     * phase-2 design). Off-spec images pass through untouched. */
+    if (CGImageGetBitsPerComponent(cg) != 8 ||
+        CGImageGetBitsPerPixel(cg) != 32 ||
+        !CGImageGetColorSpace(cg) ||
+        CGColorSpaceGetModel(CGImageGetColorSpace(cg)) != kCGColorSpaceModelRGB ||
+        (CGImageGetAlphaInfo(cg) != kCGImageAlphaPremultipliedLast &&
+         CGImageGetAlphaInfo(cg) != kCGImageAlphaLast &&
+         CGImageGetAlphaInfo(cg) != kCGImageAlphaNoneSkipLast)) {
+        if (glass_failed < 8)
+            fprintf(stderr,
+                "sb26 glass: passthrough %s (bpc=%zu bpp=%zu alpha=%d)\n",
+                key, CGImageGetBitsPerComponent(cg),
+                CGImageGetBitsPerPixel(cg), (int)CGImageGetAlphaInfo(cg));
+        glass_failed++;
+        return src;
+    }
     color_a = glass_icon_color;
     white_a = glass_icon_white;
     if (color_a < 0.05f) color_a = 0.05f;
@@ -1494,6 +1705,22 @@ sb26_glass_pass(void)
             glass_passes, glass_applied, glass_made, glass_hits, glass_failed);
 }
 
+/* H1 stamp for one icon view: the glass config version its artwork is baked
+ * under, plus the source file's mtime/size as the artwork's generation. The
+ * file is the bundle's chosen icon PNG (or, for the scan fallback, the
+ * bundle directory itself). A source that cannot be stat'ed stamps as
+ * "nofile", which stays stable for as long as it stays missing. */
+static void
+sb26_icon_stamp(char *buf, size_t bufsz, const char *srcpath)
+{
+    struct stat st;
+    if (srcpath && stat(srcpath, &st) == 0)
+        snprintf(buf, bufsz, "%u:%lld:%lld", glass_conf_version,
+            (long long)st.st_mtime, (long long)st.st_size);
+    else
+        snprintf(buf, bufsz, "%u:nofile", glass_conf_version);
+}
+
 static void
 sb26_fill_one_icon(id view)
 {
@@ -1503,8 +1730,8 @@ sb26_fill_one_icon(id view)
         "AppIcon60x60@2x~iphone.png", "icon-60@2x.png",
     };
     id layer, icon, app, base, url, prev, cached, image = nil, cg = nil;
-    const char *root, *prev_root;
-    char path[PATH_MAX];
+    const char *root, *prev_root, *srcpath = NULL;
+    char path[PATH_MAX], srcbuf[PATH_MAX], stamp[80];
     unsigned i;
     Class tx;
 
@@ -1586,23 +1813,59 @@ sb26_fill_one_icon(id view)
     /* v59/v60 only asked "is contents non-nil?", so a recycled view kept its old artwork under
      * the new label. Compare the bundle path the cached picture came from with the view's CURRENT
      * icon. Even when they match, re-assert our CGImage: -updateImage: can replace layer.contents
-     * with the (nil / black) Metal-produced image behind our back. */
+     * with the (nil / black) Metal-produced image behind our back.
+     *
+     * H1: the re-assert is no longer unconditional. When the view's stamp --
+     * glass config version + the source file's mtime/size -- still matches
+     * AND the layer still holds exactly the image that stamp was taken with,
+     * the pass skips the view entirely: v89 refilled and rebaked all 23
+     * icons on every com.redwood.icons notify and every late step, all of
+     * it synchronous on this queue. A contents pointer that is no longer
+     * ours fails the pointer check and refills, which keeps the v59/v60
+     * protection; a stamp mismatch (the artwork or glass.conf changed)
+     * falls through to a full reload below instead of re-serving the
+     * decoded image already held. */
     prev = objc_getAssociatedObject(view, &sb26_icon_key);
     cached = objc_getAssociatedObject(view, &sb26_icon_image_key);
     prev_root = sb26_utf8(prev);
     if (prev_root && cached && strcmp(prev_root, root) == 0) {
-        cg = sb26_ask(cached, "CGImage");
-        if (cg) sb26_icons_refreshed++;
-        else cached = nil;
+        id last = objc_getAssociatedObject(view, &sb26_icon_set_key);
+        const char *old = sb26_utf8(objc_getAssociatedObject(view,
+            &sb26_icon_stamp_key));
+        srcpath = sb26_utf8(objc_getAssociatedObject(view, &sb26_icon_src_key));
+        sb26_glass_conf();
+        sb26_icon_stamp(stamp, sizeof(stamp), srcpath);
+        if (last && old && !strcmp(old, stamp) &&
+            sb26_ask(layer, "contents") == last) {
+            sb26_icons_skipped++;
+            return;
+        }
+        if (old && strcmp(old, stamp) != 0) {
+            cached = nil;   /* the artwork or the glass config moved: reload */
+        } else {
+            cg = sb26_ask(cached, "CGImage");
+            if (cg) sb26_icons_refreshed++;
+            else cached = nil;
+        }
     }
     if (!cg) {
         for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
             if (snprintf(path, sizeof(path), "%s/%s", root, names[i]) >= (int)sizeof(path)) continue;
             if (access(path, R_OK) != 0) continue;
             image = sb26_uiimage_at(path);
-            if (image) break;
+            if (image) {
+                snprintf(srcbuf, sizeof(srcbuf), "%s", path);
+                srcpath = srcbuf;
+                break;
+            }
         }
-        if (!image) image = sb26_uiimage_by_scan(root);
+        if (!image) {
+            image = sb26_uiimage_by_scan(root);
+            if (image) {
+                snprintf(srcbuf, sizeof(srcbuf), "%s", root);
+                srcpath = srcbuf;
+            }
+        }
         if (!image) { sb26_icons_no_image++; return; }
         cg = sb26_ask(image, "CGImage");
         if (!cg) { sb26_icons_no_image++; return; }
@@ -1616,6 +1879,15 @@ sb26_fill_one_icon(id view)
                 objc_setAssociatedObject(view, &sb26_icon_image_key, image,
                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
+            if (srcpath) {
+                CFStringRef src = CFStringCreateWithCString(kCFAllocatorDefault,
+                    srcpath, kCFStringEncodingUTF8);
+                if (src) {
+                    objc_setAssociatedObject(view, &sb26_icon_src_key, (id)src,
+                        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    CFRelease(src);
+                }
+            }
         }
         sb26_icons_filled++;
     }
@@ -1626,9 +1898,24 @@ sb26_fill_one_icon(id view)
         ((void (*)(Class, SEL, BOOL))objc_msgSend)(tx, sel_registerName("setDisableActions:"), YES);
     }
     sb26_glass_conf();
-    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"),
-        sb26_glass_image(root, cg));
-    ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
+    {
+        id want = sb26_glass_image(root, cg);
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContents:"), want);
+        ((void (*)(id, SEL, id))objc_msgSend)(layer, sel_registerName("setContentsGravity:"), (id)CFSTR("resizeAspect"));
+        /* H1: remember exactly what was set, and the stamp it was set under. */
+        objc_setAssociatedObject(view, &sb26_icon_set_key, want,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        sb26_icon_stamp(stamp, sizeof(stamp), srcpath);
+        {
+            CFStringRef s = CFStringCreateWithCString(kCFAllocatorDefault, stamp,
+                kCFStringEncodingUTF8);
+            if (s) {
+                objc_setAssociatedObject(view, &sb26_icon_stamp_key, (id)s,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                CFRelease(s);
+            }
+        }
+    }
     /* Deliberately NO layer opacity here. v91 tried 0.72 on SBIconImageView and
      * every PNG-backed icon vanished (only the natively rendered Clock survived,
      * as a translucent purple glass tile). Until the driver composites layer
@@ -1765,6 +2052,8 @@ sb26_icon_late_step(void *context)
         sb26_icons_no_path, sb26_icons_no_image, sb26_icon_hooked,
         sb26_icon_fallback_calls, sb26_icon_fallback_wrapped,
         sb26_wall_seen, sb26_wall_filled, sb26_wall_had, sb26_wall_noimg, sb26_wall_layers);
+    fprintf(stderr, "sb26: icons incremental: skipped=%u glassver=%u\n",
+        sb26_icons_skipped, glass_conf_version);
 }
 
 /* Host-side "oem sh notify com.redwood.icons" re-runs the icon fill at any time, so a
@@ -1776,14 +2065,17 @@ sb26_install_icon_refresh_notify(void)
     notify_register_dispatch("com.redwood.icons", &token, dispatch_get_main_queue(), ^(int t) {
         (void)t;
         /* Host-side retuning: edit /redwood/etc/glass.conf, then post this
-         * notify; drop the baked bitmaps so the new alpha values take effect. */
-        glass_conf_read = 0;
-        glass_used = 0;
-        sb26_glass_conf();
+         * notify. H1: the re-read drops the baked bitmaps ONLY when the
+         * file's bytes actually changed (sb26_glass_conf_refresh); on an
+         * unchanged conf the fill below skips every icon whose stamp still
+         * matches, instead of v89's rebake-all-23 on every notify. */
+        sb26_glass_conf_refresh();
         sb26_fill_all_icons();
         sb26_glass_pass();
         fprintf(stderr, "sb26: icon refresh notify: filled=%u refilled=%u seen=%u\n",
             sb26_icons_filled, sb26_icons_refreshed, sb26_icons_seen);
+        fprintf(stderr, "sb26: icon refresh notify: skipped=%u glassver=%u\n",
+            sb26_icons_skipped, glass_conf_version);
     });
 }
 

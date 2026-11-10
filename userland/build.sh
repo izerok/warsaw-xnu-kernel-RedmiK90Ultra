@@ -825,6 +825,11 @@ PY
 		printf 'dock = %s\n' "${GLASS_DOCK:-1.0}"
 		printf 'search = %s\n' "${GLASS_SEARCH:-1.0}"
 		printf 'widget = %s\n' "${GLASS_WIDGET:-1.0}"
+		printf '# icon_cold_ms: sync wait for a repeat cold iconservices request (H2)\n'
+		printf '# icon_first_ms: window for a bundle'\''s first icon generation; past it\n'
+		printf '# the generation finishes asynchronously and re-posts com.redwood.icons\n'
+		printf 'icon_cold_ms = %s\n' "${GLASS_ICON_COLD_MS:-300}"
+		printf 'icon_first_ms = %s\n' "${GLASS_ICON_FIRST_MS:-1500}"
 	} > root/etc/glass.conf
 	# Metal's discovery is a whole rc of its own (RC=rc.metal), not a file this script tests:
 	# init runs root/etc/rc a line at a time, each line a command, so a shell `if` in it is a
