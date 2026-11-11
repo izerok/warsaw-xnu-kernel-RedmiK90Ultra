@@ -1,0 +1,10 @@
+warsaw bootimg chain - build info
+time (UTC):   2026-11-11T00:27:48Z
+source repo:  izerok/warsaw-xnu-kernel-RedmiK90Ultra @ 99e111e22bff6c3016d76f95189d7a27adb34814
+Mu tree:      https://github.com/iola1999/hackios-mu-silicium.git @ pin 90721af9041bcf8683d12583cc12ba4e4658a48b (HEAD 90721af9041bcf8683d12583cc12ba4e4658a48b)
+FD base/size: 0xa7100000 / 0x300000; payload base/cap: 0xf0000000 / 0x03700000
+FD:           MISSING (warsawPkg unpublished) - warsaw-boot.img NOT built
+next step:    build SILICIUM_UEFI.fd (exactly 3145728 bytes) from a Mu tree
+              carrying warsawPkg, place it on branch warsaw-fd, re-run this workflow.
+contents:     open-source builds + in-repo warsaw.dtb only; no Apple system
+              content (no IPSW / system26.apfs / root26.apfs / vendor firmware).
