@@ -32,7 +32,12 @@ env:
   PAYLOAD_CAP: "0x03700000"
   UEFI_TARGET: warsaw
   MU_REPO: https://github.com/iola1999/hackios-mu-silicium.git
-  MU_BRANCH: k90-port
+  # Mu 取源钉版（二期第三批，2026-11-11）：不再追 k90-port 分支 HEAD。
+  # 钉版点 = 已核验首跑 42626122888 的 bootimg-artifacts 分支 BUILD-INFO.txt
+  # 里逐字记录的 Mu HEAD 全长（该跑现编的 BootShim.bin 已复算核验：
+  # 368 B，SHA-256 0a5cbe63…ffaa87）；2026-11-11 审计时它仍是 k90-port 的
+  # 分支头（2026-11-05 提交），即钉版点与首跑实际状态一致、非推导。
+  MU_COMMIT: 90721af9041bcf8683d12583cc12ba4e4658a48b
   FD_BRANCH: warsaw-fd
   FD_SIZE_BYTES: "3145728"
 
@@ -50,12 +55,16 @@ jobs:
           clang --version | head -1
           command -v llvm-objcopy && command -v make && python3 --version
 
-      - name: 稀疏克隆 Mu 树（只要 BootShim 与 Resources）
+      - name: 稀疏克隆 Mu 树（钉版取源，只要 BootShim 与 Resources）
         run: |
           set -euo pipefail
-          git clone --depth 1 --filter=blob:none --sparse --branch "$MU_BRANCH" "$MU_REPO" Mu-Silicium
+          git init -q Mu-Silicium
+          git -C Mu-Silicium remote add origin "$MU_REPO"
+          git -C Mu-Silicium fetch -q --depth 1 --filter=blob:none origin "$MU_COMMIT"
           git -C Mu-Silicium sparse-checkout set BootShim Resources
-          echo "Mu HEAD: $(git -C Mu-Silicium rev-parse HEAD)"
+          git -C Mu-Silicium checkout -q FETCH_HEAD
+          echo "Mu HEAD: $(git -C Mu-Silicium rev-parse HEAD)（钉版点 $MU_COMMIT）"
+          [ "$(git -C Mu-Silicium rev-parse HEAD)" = "$MU_COMMIT" ] || { echo "::error::Mu HEAD 与钉版点不一致"; exit 1; }
           ls Mu-Silicium/BootShim Mu-Silicium/Resources/Scripts
 
       - name: 现编 loader（warsaw 专用，与 build-loader 同参）
@@ -127,7 +136,7 @@ jobs:
             echo "warsaw bootimg chain - build info"
             echo "time (UTC):   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "source repo:  ${{ github.repository }} @ ${{ github.sha }}"
-            echo "Mu tree:      $MU_REPO @ $MU_BRANCH $(git -C Mu-Silicium rev-parse HEAD)"
+            echo "Mu tree:      $MU_REPO @ pin $MU_COMMIT (HEAD $(git -C Mu-Silicium rev-parse HEAD))"
             echo "FD base/size: $FD_BASE / $FD_SIZE; payload base/cap: $PAYLOAD_BASE / $PAYLOAD_CAP"
             if [ -n "${{ steps.fd.outputs.path }}" ]; then
               echo "FD:           provided via branch $FD_BRANCH, size + sha256 verified in-log"
