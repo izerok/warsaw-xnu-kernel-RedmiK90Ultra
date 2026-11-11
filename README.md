@@ -12,6 +12,58 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 > [@wannqn](https://t.me/wannqn) / [@hxfuxyyXD](https://t.me/hxfuxyyXD)，动态见 [t.me/oosexgangdevs](https://t.me/oosexgangdevs)。
 > 本仓库是同机型开发者的本地工作分支，没有上游授权，不是上游官方仓库。
 
+## 本 fork 进展（izerok 接手，2026-11-11 更新）
+
+本节是 fork 维护者接手后的工作记录；下文原作者的 v92 状态描述保持原样、未改动。
+
+**标记口径（请按字面理解）：**
+
+- ✅ **已验证**：仅指 CI 构建成功且产物已取回逐件复算（大小 / SHA-256 / 文件头），或代码级审计结论有文件与行号出处。
+- ⚠️ **未实测**：没有在真机上跑过。**本 fork 至今没有真机**，一切运行时行为都属未实测；原作者 v92 的真机状态（下文）是原作者自述，本 fork 未复跑、未复现。
+
+### 预构建链（一期，✅ 已验证）
+
+上游原有的 4 条 workflow 之外补齐了拼装段，现共 5 条，全部在 GitHub Actions 跑通，产物落各自分支并逐件复算：
+
+| 线 | 产物（分支） | 复算值 |
+|---|---|---|
+| loader | `loader-phone.efi`（loader-artifacts） | 122,368 B，SHA-256 `92d178ae…ecc7f` |
+| kernel | `kernel-ath12k.bin`（kernel-artifacts） | 20,977,760 B，SHA-256 `27667707…2ab297`，arm64 Mach-O |
+| metal | `libredwoodmetal.dylib` 等（metal-artifacts） | 与上游产物树逐 blob 一致 |
+| air | `libannibaleair.dylib`（air-artifacts） | 14,137,232 B |
+| bootimg | `BootShim.bin` + `usb-payload.bin` + `warsaw.dtb`（bootimg-artifacts） | BootShim 368 B，SHA-256 `0a5cbe63…ffaa87` |
+
+- ⚠️ **未产出**：`warsaw-boot.img` 还拼不出来——缺 UEFI FD（Mu 树的 `warsawPkg` 从未公开）。把恰为 3,145,728 B 的 `SILICIUM_UEFI.fd` 放到 `warsaw-fd` 分支后重跑 build-bootimg 即可拼装。严禁用 annibale 的 FD 改名顶替。
+- 产物红线不变：任何分支 / artifact / Release 都不含 Apple 系统内容与厂商固件，系统盘仍在开机时本地单独 stage。
+
+### 外部取源钉版（二期第一、三批，✅ 已验证）
+
+追上游 HEAD 的漂移已实际咬过两次（Mesa 目录改名、上游 TrollStore 集成删掉安装器源码致 adhoc 构建 exit 127，根因有 job 日志原文实证），现已全部钉死或审计确认：
+
+- build-host-tools：adhoc 钉 `134708e`（安装器源码被删前的最后状态）、arm64e 钉 `e052bd49`。
+- build-mesa-air：取源钉 `e052bd49`，pip 依赖钉版（mako / pyyaml / packaging）。
+- build-bootimg：Mu 克隆钉 `90721af9…a48b`（已核验首跑 BUILD-INFO 的直证记录）；钉版后重跑，BootShim 哈希与一期逐字一致。
+- build-kernel：审计结论为已全钉，未改——`apply.sh` 有 BASE 全长 SHA 断言、deps 按版本 tag、ath12k 两个工具均版本 + SHA 校验。
+
+### 交接问题修复 H1 / H2（二期第二批，✅ 已编译验证，⚠️ 行为未实测）
+
+针对 v92 交接清单的点图标红闪、帧空窗与冷超时，改 `userland/src/inject_sb26.c`：
+
+- **H1 增量图标填充**：未变化的图标跳过整轮重填；glass 缓存只在 `glass.conf` 字节变化时才失效（删掉通知一来就整表重置）；`sb26_glass_image` 加格式防御，非预期位图格式原图透传、不做位图手术。
+- **H2 冷超时分层**：首次生成给长窗口（新配置键 `icon_first_ms`，默认 1500 ms）但**只在异步侧**，主线程仍封顶 `icon_cold_ms`（默认 300 ms，守 v70 的看门狗教训）；超时后异步完成回填缓存，任何一档都绝不返回 NULL。
+- 新 `libredwood-sb26.dylib` 176,800 B，SHA-256 `43f3c014…9bd`；CI 三 job 全绿，新代码零警告。
+- ⚠️ **未实测**：红闪是否消失、帧率是否改善、SIGNAL 5 是否还复现，都要真机对照复跑才能定；且补丁改变了玻璃变换的执行频率，崩溃计数与原版 v92 不同口径、不能直接比。
+
+### 代码级结论（审计推断，⚠️ 均未实测）
+
+- **UFS 不缺驱动**：`redwood_ufs` 栈、loader 共享页机制、切根与分区工具都与 annibale 同源俱在。真差距是三件：闪存里还没有 darwin 分区（推导 LBA 已算好，未执行切分）、真机 payload 的 cmdline 是否带 ufs 参数无入仓实证、原生 UFSHCI 通路无真机读数。现行 DSU 文件级持久化是原作者已跑通的基线。
+- **Wi-Fi 协议栈已在内核**：现行线是 WCN7850 / PCIe / ath12k，固件是 `kiwi/` 扁平文件；v92 从未启用（启动参数没开）。最小改动面推断为本地 staging 固件 + 分级 cmdline，大概率零内核改动。另纠正一处旧口径：**不需要生成 `board-2.bin`**——`mhi_pcie_radio_file()` 只认 `board.bin` / `regdb.bin` / `m3.bin`，board id 只用于选 / 核对 bd 文件。
+- **SIGNAL 5 嫌疑排序**（样本 n=1，只排排查顺序、不是定论）：① v89 的 `sb26_glass_image` 图标变换；② v89 通知处理器整表缓存重置（放大器）；③ `glass_pass` 视图遍历。v87 的 GPU 路径已排除（v88 已回退）。
+
+### 待真机（全部 ⚠️ 未实测）
+
+真机到手后按既定规程推进：H3 对照复跑（原版 / 补丁版各 ≥5 跑交替）定性 SIGNAL 5 → W 线分级开启 PCIe / Wi-Fi（以 DHCP 租约为联网判据）→ U 线只读勘察、原生 UFS 验证（切分 darwin 分区属写 NAND，须另行确认）→ H4 驱动层 alpha 合成。前置条件：一台 K90 Ultra，或至少一份基带分区备份（拉 Wi-Fi 固件用）。
+
 ## 当前进展（v92，2026-11-09）
 
 **iOS 26 主屏桌面可交互，图标样式已定稿。** launchd 全部 boot task 通过、原生
