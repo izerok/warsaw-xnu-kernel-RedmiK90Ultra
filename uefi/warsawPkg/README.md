@@ -38,4 +38,8 @@
   PHASE6-OPEN-ITEMS.md C1/C2；面板型号已由 warsaw 真机 DT 钉定为
   qcom,mdss_dsi_p12x_42_02_0a_dsc_cmd，缺的只是 XML 文件本身。第七批：
   DBI_Dump 经 SM8750 三机型横向采样改注 [S2]，XBL_Ramdump 雕刻长对齐
-  0x1C0000，见 fork 的 PHASE7-CROSSMODEL.md 任务 B。）
+  0x1C0000，见 fork 的 PHASE7-CROSSMODEL.md 任务 B。第九批：DBI_Dump/DXE_Heap
+  由 warsaw 自家 xbl_config DT 改注 [S1]（DBI 0xB81C0000/0x5770000、DXE_Heap
+  0xBD930000/0x1A6D0000），旧模板 DXE_Heap 0xB90C0000 落在 DT 的 DBI 区内
+  0x4870000 字节重叠是真缺陷，主代理 2026-11-13 裁决修正，见 fork 的
+  PHASE9-BINARIES.md §4.4。）

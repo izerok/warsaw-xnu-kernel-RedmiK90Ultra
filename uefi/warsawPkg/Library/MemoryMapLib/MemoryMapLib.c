@@ -12,6 +12,13 @@
          must not be booted until this is resolved from the real device.
   See ../../README.md and the fork's PHASE4-ALIGN.md for the full table.
   NOT built, NOT device-verified.
+  API note (2026-11-13, phase 9): this file originally used the
+  ARM_MEMORY_REGION_DESCRIPTOR_EX / GetPlatformMemoryMap form, which does
+  NOT exist at the pinned Mu tree (90721af9) -- no such type or
+  EFI_PHYSICAL_ADDRESS_MAX anywhere in Mu_Basecore, and the consumers
+  (MemoryInitPeiLib, MemoryMapHelperLib) call GetMemoryMap with the
+  EFI_MEMORY_REGION_DESCRIPTOR form. Corrected to annibalePkg's shape at
+  the same pin (table rows and values unchanged); see PHASE9-BINARIES.md §5.
 
   Copyright (c) Microsoft Corporation.
   Copyright (C) 2023 - 2024, Qianqian (Duo) Wang.
@@ -24,7 +31,7 @@
 #include <Library/ArmLib.h>
 #include <Library/MemoryMapLib.h>
 
-static ARM_MEMORY_REGION_DESCRIPTOR_EX gDeviceMemoryDescriptorEx[] = {
+static EFI_MEMORY_REGION_DESCRIPTOR gMemoryDescriptor[] = {
   /* Name               Address                 Length                  HobOption        ResourceType          ResourceAttribute    MemoryType          ArmAttributes
   */
   /* DDR Regions */
@@ -40,8 +47,8 @@ static ARM_MEMORY_REGION_DESCRIPTOR_EX gDeviceMemoryDescriptorEx[] = {
   {"Display_Demura",      0xA3500000,             0x02C80000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Reserv,             WRITE_BACK_XN}, // [S3] CONTRADICTED on warsaw: its demura_region_0/1 are zero-length and 0xA3500000 is ramoops-region (len 0x400000) -- do not copy
   {"Kernel",              0xA8000000,             0x10000000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Conv,               WRITE_BACK_XN}, // [S2] Silicium layout convention
   {"XBL_Ramdump",         0xB8000000,             0x001C0000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Reserv,             NS_DEVICE},  // [S1/S2] warsaw.dtb xbl_ramdump_region reserves len 0x200000 on the Android side (tranche 4, kept on record), but every SM8750 Silicium map (annibale/dodge/pagani) carves 0x1C0000 and the dodge/pagani firmware-side DTs declare xbl_ramdump_region len 0x1C0000 (tranche 7, PHASE7-CROSSMODEL.md task B); annibale itself carries both views (map 0x1C0000 vs Android DT 0x200000). 0x1C0000 also removes the overlap with DBI_Dump below; the union of the two carves still covers the whole DT-reserved span 0xB8000000-0xB8200000
-  {"DBI_Dump",            0xB81C0000,             0x00F00000,             NoHob,           SYS_MEM,            SYS_MEM_CAP,         Reserv,             NS_DEVICE},  // [S2] tranche 7 cross-model SM8750 sampling: all three PakalaPkg maps (annibale, dodge, pagani) place DBI_Dump at 0xB81C0000 = ramdump base + the 0x1C0000 map carve; annibale and dodge use len 0xF00000, pagani uses 0x5770000 (its own XBL value, no in-tree derivation). The phase-6 fill candidate 0xB8200000/0xEC0000 is REFUTED by the samples (no SM8750 map bases DBI at the Android-DT ramdump end) -- do not revive. Final confirmation still requires warsaw's own XBL platform DT (SM8750 moved platform config from uefiplat.cfg into the xbl_config DT)
-  {"DXE_Heap",            0xB90C0000,             0x1D500000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Conv,               WRITE_BACK_XN}, // [S2] Silicium layout convention
+  {"DBI_Dump",            0xB81C0000,             0x05770000,             NoHob,           SYS_MEM,            SYS_MEM_CAP,         Reserv,             NS_DEVICE},  // [S1] warsaw's own XBL platform DT: xbl_config.elf SHA-256 f02a935fdbd09c5cb96671aa437dbd710652d207eaa9754eb14f47e3ce75d331, ph3-0000840c.dtb mem-label 'DBI_Dump', len 0x5770000. Supersedes the tranche-7 [S2] template 0xF00000 (annibale/dodge; pagani already used 0x5770000 as its own XBL value). The phase-6 fill candidate 0xB8200000/0xEC0000 stays REFUTED -- do not revive. Adjudicated 2026-11-13 by main agent, PHASE9-BINARIES.md §4.4
+  {"DXE_Heap",            0xBD930000,             0x1A6D0000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Conv,               WRITE_BACK_XN}, // [S1] warsaw's own XBL platform DT (same source as DBI_Dump above, mem-label 'DXE_Heap'): base 0xBD930000 = DBI_Dump end, len 0x1A6D0000, ends 0xD8000000. Supersedes the [S2] template 0xB90C0000/0x1D500000, whose base fell 0x4870000 inside the DT's DBI region (real overlap defect, 72.5 MB). Adjudicated 2026-11-13 by main agent, PHASE9-BINARIES.md §4.4
 
   /* UEFI Regions */
   {"FD_Reserved",         0xA7000000,             0x00100000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Reserv,             NS_DEVICE},  // [S2] Silicium layout; the FD window it guards is [S1]
@@ -76,21 +83,20 @@ static ARM_MEMORY_REGION_DESCRIPTOR_EX gDeviceMemoryDescriptorEx[] = {
   {"XNU_Payload",         0xF0000000,             0x03800000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Reserv,             WRITE_BACK_XN}, // [S1] RESOLVED (phase-6): this length is the reservation WINDOW, not the container cap -- Silicium XnuLoader.h defines REGION_SIZE 0x03800000 mirroring this entry and MAX_SIZE 0x03700000 (== warsaw.conf PAYLOAD_CAP) as the loader/packer-enforced container limit, the top 1 MiB being the panic-log tail; the window end 0xF3800000 is exactly warsaw.dtb trust_ui_vm_region's start. No discrepancy (PHASE6-OPEN-ITEMS C2)
   {"Display_Reserved",    0xFC800000,             0x02B00000,             AddMem,          SYS_MEM,            SYS_MEM_CAP,         Reserv,             WRITE_THROUGH_XN}, // [S1] warsaw.dtb splash_region -- identical; also warsaw.conf FB_BASE
 
-  /* Terminator for the list */
-  {NULL,                  EFI_PHYSICAL_ADDRESS_MAX, 0,                    0,               0,                  0,                   0,                0}
 };
 
 /**
-  Return the platform memory map.
+  This Function returns the Memory Map Data.
 
-  @param[out]   MemoryMap  The pointer to the platform memory map.
-
+  @param[out] MemoryDescriptor             - The Memory Map.
+  @param[out] MemoryDescriptorCount        - The Number of Entries in the Memory Map.
 **/
 VOID
-EFIAPI
-GetPlatformMemoryMap (
-  OUT ARM_MEMORY_REGION_DESCRIPTOR_EX **MemoryMap
-  )
+GetMemoryMap (
+  OUT EFI_MEMORY_REGION_DESCRIPTOR **MemoryDescriptor,
+  OUT UINT8                         *MemoryDescriptorCount)
 {
-  *MemoryMap = gDeviceMemoryDescriptorEx;
+  // Pass Data
+  *MemoryDescriptor      = gMemoryDescriptor;
+  *MemoryDescriptorCount = ARRAY_SIZE (gMemoryDescriptor);
 }

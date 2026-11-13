@@ -69,7 +69,7 @@
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
   INF Binaries/warsaw/QcomPkg/Drivers/CPRDxe/CPRDxe.inf
 !endif
-  #INF Binaries/warsaw/QcomPkg/Drivers/GpiDxe/GpiDxe.inf
+  INF Binaries/warsaw/QcomPkg/Drivers/GpiDxe/GpiDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/SPIDxe/SPIDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
@@ -83,8 +83,10 @@
   INF Binaries/warsaw/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/ChargerExDxe/ChargerExDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/IPCCDxe/IPCCDxe.inf
-  #INF Binaries/warsaw/QcomPkg/Drivers/GLinkDxe/GLinkDxe.inf
-  INF Binaries/warsaw/QcomPkg/Drivers/OcdtDxe/OplusProject.inf
+  INF Binaries/warsaw/QcomPkg/Drivers/GLinkDxe/GLinkDxe.inf
+  # PHASE9 trial-build local fix (Mu-tree copy only; fork scaffold needs the same removal):
+  # OplusProject.inf is absent from warsaw's stock FV (Oplus driver, dodge leftover) -- see PHASE9 §2.
+  #INF Binaries/warsaw/QcomPkg/Drivers/OcdtDxe/OplusProject.inf
   INF Binaries/warsaw/QcomPkg/Drivers/PmicGlinkDxe/PmicGlinkDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/QcomChargerDxe/QcomChargerDxeLA.inf
   INF Binaries/warsaw/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf

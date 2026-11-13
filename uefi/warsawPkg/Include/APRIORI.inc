@@ -60,7 +60,9 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
 
   INF Binaries/warsaw/QcomPkg/Drivers/DDRInfoDxe/DDRInfoDxe.inf
-  INF Binaries/warsaw/QcomPkg/Drivers/OcdtDxe/OplusProject.inf
+  # PHASE9 trial-build local fix (Mu-tree copy only; fork scaffold needs the same removal):
+  # OplusProject.inf is absent from warsaw's stock FV (Oplus driver, dodge leftover) -- see PHASE9 §2.
+  #INF Binaries/warsaw/QcomPkg/Drivers/OcdtDxe/OplusProject.inf
   INF Binaries/warsaw/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/PILProxyDxe/PILProxyDxe.inf
   INF Binaries/warsaw/QcomPkg/Drivers/PILDxe/PILDxe.inf
