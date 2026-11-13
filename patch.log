@@ -1,0 +1,186 @@
+=== /tmp/u/tools/mesa/air-frontend.patch
+ok
+The text leading up to this was:
+--------------------------
+|Teach ir3_compiler to read AIR, the way it already reads SPIR-V.
+|
+|ir3_cmdline.c takes GLSL, TGSI and SPIR-V and compiles each for an Adreno. A
+|.metallib (or one module's bitcode) is one more front end to it, and putting it
+|here rather than in a tool of our own means the AIR path is compiled by the same
+|ir3 the port's Mesa uses, with the same options, and that a regression in ir3
+|shows against AIR as it does against the others.
+|
+|--chip-id takes the Adreno's chip id instead of the old gpu-id, because the
+|the POCO X5 Pro's Adreno 7c+ Gen 3 (A635) has no gpu-id of its own: freedreno knows it
+|only as chip_id 0x007506030500.
+|
+|It also declares air_run here, next to ir3_compiler: air_run draws with a translated shader and
+|reads the pixel back, and it needs libgallium, which meson has not defined yet where the rest of
+|the frontend is read (src/compiler comes before src/gallium). Its source stays with the frontend.
+|
+|Also removes this tool's own call of ir3_nir_lower_variant, which is a bug of
+|the tool: ir3_context_init already calls it on its clone of the NIR, and the
+|const-state setup inside asserts the second time. It shows on any shader whose
+|const state reserves something -- every vertex shader, and anything with image
+|dimensions -- and hides on the rest, which is presumably why it survived.
+|--- a/src/gallium/drivers/freedreno/ir3/ir3_cmdline.c
+|+++ b/src/gallium/drivers/freedreno/ir3/ir3_cmdline.c
+--------------------------
+No file to patch.  Skipping patch.
+8 out of 8 hunks ignored
+1 out of 2 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/meson.build.rej
+=== /tmp/u/tools/mesa/air-ir3.patch
+DROPPED
+=== /tmp/u/tools/mesa/air-metal.patch
+ok
+1 out of 2 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/freedreno_batch.c.rej
+=== /tmp/u/tools/mesa/draw-perf.patch
+DROPPED
+=== /tmp/u/tools/mesa/draw-perf2-extra.patch
+ok
+1 out of 3 hunks FAILED -- saving rejects to file src/freedreno/drm/freedreno_bo.c.rej
+=== /tmp/u/tools/mesa/fd-bo-prefault.patch
+DROPPED
+=== /tmp/u/tools/mesa/fd-bo-prep-slow.patch
+ok
+=== /tmp/u/tools/mesa/fd-draw-slow.patch
+ok
+=== /tmp/u/tools/mesa/fd-import-size.patch
+ok
+=== /tmp/u/tools/mesa/fd-madvise-skip.patch
+ok
+1 out of 3 hunks FAILED -- saving rejects to file src/gallium/auxiliary/util/perf_draw.h.rej
+1 out of 1 hunk FAILED -- saving rejects to file src/freedreno/drm/freedreno_bo.c.rej
+=== /tmp/u/tools/mesa/fd-perf-off.patch
+DROPPED
+Reversed (or previously applied) patch detected!  Assuming -R.
+2 out of 3 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/fd-probe-wall-only.patch
+DROPPED
+=== /tmp/u/tools/mesa/fd-submit-merge.patch
+ok
+Reversed (or previously applied) patch detected!  Assuming -R.
+4 out of 5 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/fd6-draw-seg-slow.patch
+DROPPED
+2 out of 3 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/fd6-draw-state-slow.patch
+DROPPED
+=== /tmp/u/tools/mesa/fd6-entry-timing.patch
+ok
+1 out of 4 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/fd6-state-segs-2.patch
+DROPPED
+2 out of 8 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/fd6-state-segs.patch
+DROPPED
+=== /tmp/u/tools/mesa/fdl6-linear-import-pitch.patch
+ok
+1 out of 2 hunks FAILED -- saving rejects to file src/freedreno/drm/meson.build.rej
+1 out of 1 hunk FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+2 out of 2 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/freedreno_screen.c.rej
+The text leading up to this was:
+--------------------------
+|--- a/src/gallium/frontends/osmesa/osmesa.c
+|+++ b/src/gallium/frontends/osmesa/osmesa.c
+--------------------------
+No file to patch.  Skipping patch.
+3 out of 3 hunks ignored
+The text leading up to this was:
+--------------------------
+|Only in b2/src/gallium/frontends/osmesa: osmesa.c.orig
+|--- a/src/gallium/targets/osmesa/meson.build
+|+++ b/src/gallium/targets/osmesa/meson.build
+--------------------------
+No file to patch.  Skipping patch.
+1 out of 1 hunk ignored
+The text leading up to this was:
+--------------------------
+|--- a/src/gallium/targets/osmesa/osmesa_target.c
+|+++ b/src/gallium/targets/osmesa/osmesa_target.c
+--------------------------
+No file to patch.  Skipping patch.
+2 out of 2 hunks ignored
+=== /tmp/u/tools/mesa/freedreno-darwin.patch
+DROPPED
+=== /tmp/u/tools/mesa/freedreno-ssbo-offset-4.patch
+ok
+=== /tmp/u/tools/mesa/ir3-compile-queue-probe.patch
+ok
+=== /tmp/u/tools/mesa/ir3-compile-steal.patch
+ok
+=== /tmp/u/tools/mesa/ir3-ffma-as-mad.patch
+ok
+=== /tmp/u/tools/mesa/ir3-round-default.patch
+ok
+1 out of 2 hunks FAILED -- saving rejects to file src/freedreno/ir3/ir3_nir_lower_io_offsets.c.rej
+=== /tmp/u/tools/mesa/ir3-shift-split.patch
+DROPPED
+=== /tmp/u/tools/mesa/ir3-ssbo-subdword.patch
+ok
+The text leading up to this was:
+--------------------------
+|--- a/include/GL/osmesa.h
+|+++ b/include/GL/osmesa.h
+--------------------------
+No file to patch.  Skipping patch.
+1 out of 1 hunk ignored
+The text leading up to this was:
+--------------------------
+|--- a/src/gallium/frontends/osmesa/osmesa.c
+|+++ b/src/gallium/frontends/osmesa/osmesa.c
+--------------------------
+No file to patch.  Skipping patch.
+2 out of 2 hunks ignored
+=== /tmp/u/tools/mesa/osmesa-es-profile.patch
+DROPPED
+2 out of 2 hunks FAILED -- saving rejects to file src/gallium/auxiliary/util/perf_draw.h.rej
+Reversed (or previously applied) patch detected!  Assuming -R.
+4 out of 5 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/freedreno_draw.c.rej
+=== /tmp/u/tools/mesa/perf-prog-builds.patch
+DROPPED
+=== /tmp/u/tools/mesa/perf-us-timebase.patch
+ok
+2 out of 4 hunks FAILED -- saving rejects to file src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+=== /tmp/u/tools/mesa/prog-lookup-segs.patch
+DROPPED
+=== /tmp/u/tools/mesa/rebase-26/0001-fd6-indirect-buffer-wfm-a8xx.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0002-fd6-query-barriers-gen8.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0003-restore-osmesa-26.x-drift-adaptations.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0004-a830-no-early-preamble.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0004-turnip-msm-darwin.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0005-linear-import-last-level-padding.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0006-a830-no-fs-tex-prefetch.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0007-ir3-retry-spilling-stage-without-preamble.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0008-u-trace-annibale-pass-times.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0009-fd-resource-contents-undefined.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0010-fd-no-store-of-masked-cbufs.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0011-fd-shared-no-shadow.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0012-fd-shadow-guard-probes.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0013-fd-transfer-stride-after-shadow.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0014-perf-probes-26.x.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0015-fd-bo-heap-null-check.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0015-ir3-disk-cache-darwin-uuid.patch
+SKIPPED (shader cache off)
+=== /tmp/u/tools/mesa/rebase-26/0016-nir-lower-fb-read-zero-layer.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0017-nir-yuv-explicit-lod.patch
+ok
+=== /tmp/u/tools/mesa/rebase-26/0018-ir3-alias-relative-and-fsat.patch
+ok
