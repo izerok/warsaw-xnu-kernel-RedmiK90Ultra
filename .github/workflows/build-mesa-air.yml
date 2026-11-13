@@ -88,16 +88,21 @@ jobs:
         run: |
           set -euo pipefail
           # Pinned to an exact upstream commit, NOT the moving k90-port HEAD
-          # (2026-11-10, phase-2 pinning): e052bd49 was the branch HEAD when
-          # this workflow last built green -- fork run 42753259830
-          # (2026-11-10) cloned the branch while it sat at this commit, and
-          # the branch has not moved since (2026-11-09T16:57Z). The patch
-          # set under tools/mesa is the input that matters here; tracking
-          # HEAD is what let the redwood-drm -> annibale-drm rename break
-          # step 5 of the first fork run.
+          # (2026-11-10, phase-2 pinning; 2026-11-13, phase-5 pin upgrade):
+          # raised e052bd49 -> 438e0ca, the k90-port HEAD of 2026-11-12 --
+          # 29 commits (Iris VPU damaged-frame completion, front-camera RAW
+          # capture, AIR stitching/cospi work; full list in PHASE5 doc).
+          # Pre-upgrade diff audit of tools/mesa: no renames, no deletions,
+          # the annibale-drm shim and the 31 top-level patches untouched;
+          # tools/mesa/air only gains files (51 -> 62 entries, copied
+          # wholesale below) and rebase-26 gains one patch (0018, picked up
+          # by the apply loop's find; a DROPPED verdict stays tolerated).
+          # The patch set under tools/mesa is the input that matters here;
+          # tracking HEAD is what let the redwood-drm -> annibale-drm
+          # rename break step 5 of the first fork run.
           git init /tmp/u
           git -C /tmp/u remote add origin https://github.com/iola1999/hackios-xnu-userland.git
-          git -C /tmp/u fetch --depth 1 origin e052bd494cfedb9b51b5fb6e7848124776c18779
+          git -C /tmp/u fetch --depth 1 origin 438e0cafb6eb04300de8aca8d296d8c94dc83e2f
           git -C /tmp/u checkout -q FETCH_HEAD
           git -C /tmp/u log -1 --oneline
           echo "--- 25.0.7 patch set: $(ls /tmp/u/tools/mesa/*.patch | wc -l) files ---"
