@@ -36,12 +36,12 @@ XNU 12377 / iOS 26.6.2 在 **Redmi K90 至尊版**（`warsaw`，高通 SM8750-AB
 - ⚠️ **未产出**：`warsaw-boot.img` 还拼不出来——缺 UEFI FD（Mu 树的 `warsawPkg` 从未公开）。把恰为 3,145,728 B 的 `SILICIUM_UEFI.fd` 放到 `warsaw-fd` 分支后重跑 build-bootimg 即可拼装。严禁用 annibale 的 FD 改名顶替。
 - 产物红线不变：任何分支 / artifact / Release 都不含 Apple 系统内容与厂商固件，系统盘仍在开机时本地单独 stage。
 
-### 外部取源钉版（二期第一、三批，✅ 已验证）
+### 外部取源钉版（二期第一、三、五批，✅ 已验证）
 
 追上游 HEAD 的漂移已实际咬过两次（Mesa 目录改名、上游 TrollStore 集成删掉安装器源码致 adhoc 构建 exit 127，根因有 job 日志原文实证），现已全部钉死或审计确认：
 
-- build-host-tools：adhoc 钉 `134708e`（安装器源码被删前的最后状态）、arm64e 钉 `e052bd49`。
-- build-mesa-air：取源钉 `e052bd49`，pip 依赖钉版（mako / pyyaml / packaging）。
+- build-host-tools：adhoc 钉 `134708e`（安装器源码被删前的最后状态）、arm64e 钉 `438e0ca`（2026-11-13 第五批由 `e052bd49` 升，+29 commit）。
+- build-mesa-air：取源钉 `438e0ca`（2026-11-13 第五批由 `e052bd49` 升，+29 commit），pip 依赖钉版（mako / pyyaml / packaging）。
 - build-bootimg：Mu 克隆钉 `90721af9…a48b`（已核验首跑 BUILD-INFO 的直证记录）；钉版后重跑，BootShim 哈希与一期逐字一致。
 - build-kernel：审计结论为已全钉，未改——`apply.sh` 有 BASE 全长 SHA 断言、deps 按版本 tag、ath12k 两个工具均版本 + SHA 校验。
 
