@@ -4,6 +4,13 @@
 # USE_CUSTOM_DISPLAY_DRIVER block are annibale panel files; warsaw panel
 # XMLs are [S3] unknown. annibale's in-package panel XML entry has been
 # replaced by a comment placeholder at the end of this file.
+# Phase-6 update: warsaw's panel is now IDENTIFIED from the device's own
+# runtime DT (common/devices/warsaw.dtb, /chosen bootargs on the real
+# device): msm_drm.dsi_display0 = qcom,mdss_dsi_p12x_42_02_0a_dsc_cmd
+# (panel_cell_id AFC5663072AC2, panel_build_id Pc0; NT37801/CSOT family,
+# 1280x2772 DSC cmd mode). Only the XML artifact itself is still missing;
+# it must come from warsaw stock kernel/DTBO sources, not from annibale's
+# p11 XML (PHASE6-OPEN-ITEMS D).
   FILE FREEFORM = A1E235DE-E825-4591-9623-C43175811826 {
     SECTION UI = "SecParti.cfg"
     SECTION RAW = Binaries/warsaw/RawFiles/SecParti.cfg
