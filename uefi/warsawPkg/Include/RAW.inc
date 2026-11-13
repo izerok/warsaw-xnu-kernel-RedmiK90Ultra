@@ -1,9 +1,10 @@
 # RAW.inc -- adapted from annibalePkg (Mu pin 90721af9): raw-file list
 # with Binaries/annibale paths rewritten to Binaries/warsaw ([S2], the
 # binaries themselves do not exist yet). The panel XML entries inside the
-# USE_CUSTOM_DISPLAY_DRIVER block are annibale panel files; warsaw panel
-# XMLs are [S3] unknown. annibale's in-package panel XML entry has been
-# replaced by a comment placeholder at the end of this file.
+# USE_CUSTOM_DISPLAY_DRIVER block are annibale panel files (Binaries-side
+# library, still [S3] for warsaw); annibale's in-package panel XML entry
+# is mirrored at the end of this file by warsaw's own generated p12x XML
+# ([S1], phase 8 -- see the notes below).
 # Phase-6 update: warsaw's panel is now IDENTIFIED from the device's own
 # runtime DT (common/devices/warsaw.dtb, /chosen bootargs on the real
 # device): msm_drm.dsi_display0 = qcom,mdss_dsi_p12x_42_02_0a_dsc_cmd
@@ -11,6 +12,12 @@
 # 1280x2772 DSC cmd mode). Only the XML artifact itself is still missing;
 # it must come from warsaw stock kernel/DTBO sources, not from annibale's
 # p11 XML (PHASE6-OPEN-ITEMS D).
+# Phase-8 update: the XML artifact now exists -- generated from the
+# official display-devicetree p12x dtsi (NOT adapted from annibale's
+# 1440x3200/P11 files) and placed in-package like annibale's; see the
+# entry at the end of this file and PHASE8-PANELXML.md. USE_CUSTOM_
+# DISPLAY_DRIVER still defaults to 0, so FD composition is unchanged
+# until that flag is deliberately enabled.
   FILE FREEFORM = A1E235DE-E825-4591-9623-C43175811826 {
     SECTION UI = "SecParti.cfg"
     SECTION RAW = Binaries/warsaw/RawFiles/SecParti.cfg
@@ -468,8 +475,15 @@
     SECTION RAW = Binaries/warsaw/RawFiles/uefipil.cfg
   }
 
-# [S3] annibale embedded its own panel DSC command XML here
-# (Panel_xiaomi_p11_42_0d_0a_dsc_cmd.xml, in-package RawFiles).
-# warsaw's panel (1280x2772) command XML is not in our materials;
-# add warsawPkg/RawFiles/<warsaw panel>_dsc_cmd.xml and a matching
-# FILE FREEFORM entry here once it is sourced from the device.
+# [S1] warsaw's own panel DSC command XML, generated from the panel
+# dtsi in MiCode/vendor_qcom_opensource_display-devicetree (branch
+# warsaw-w-oss, display/warsaw/dsi-panel-p12x-42-02-0a-dsc-cmd.dtsi,
+# 60 Hz timing mode) with tools/panelxml/dtsi2panelxml.py -- the same
+# conversion annibale's in-package P11 XML was produced with; the
+# converter reproduces that shipped P11 XML byte-for-byte from its
+# p10 dtsi (regression record: PHASE8-PANELXML.md). Mirrors
+# annibalePkg's in-package entry (fresh GUID, not annibale's).
+  FILE FREEFORM = D05B32EF-A86D-4D4C-A57D-1BE29383D50E {
+    SECTION UI = "Panel_xiaomi_p12x_42_02_0a_dsc_cmd.xml"
+    SECTION RAW = warsawPkg/RawFiles/Panel_xiaomi_p12x_42_02_0a_dsc_cmd.xml
+  }
