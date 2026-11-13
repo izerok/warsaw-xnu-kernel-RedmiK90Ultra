@@ -32,8 +32,10 @@
 
 - 本目录**不含任何现成 FD 或 annibale 的二进制**；`Binaries/warsaw/` 只许
   以 warsaw 自有来源补齐，不许把 annibale 的 FD 改名充数。
-- [S3] 项（SMBIOS 板型/SKU、面板 XML、DBI_Dump 放置等）补齐前，本包产出
+- [S3] 项（SMBIOS 板型/SKU、面板 XML 等）补齐前，本包产出
   的任何 FD 都不得声称可上机。（2026-11-13 第六批：PIL_Reserved 与 RSRV0
   已由 [S3] 改注 [S2]、XNU_Payload 长度疑点已裁决消解，见 fork 的
   PHASE6-OPEN-ITEMS.md C1/C2；面板型号已由 warsaw 真机 DT 钉定为
-  qcom,mdss_dsi_p12x_42_02_0a_dsc_cmd，缺的只是 XML 文件本身。）
+  qcom,mdss_dsi_p12x_42_02_0a_dsc_cmd，缺的只是 XML 文件本身。第七批：
+  DBI_Dump 经 SM8750 三机型横向采样改注 [S2]，XBL_Ramdump 雕刻长对齐
+  0x1C0000，见 fork 的 PHASE7-CROSSMODEL.md 任务 B。）
