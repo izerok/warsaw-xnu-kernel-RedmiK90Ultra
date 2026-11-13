@@ -1,0 +1,5 @@
+##
+#  warsawPkg package declaration -- intentionally empty, mirroring
+#  annibalePkg's annibale.dec (0 bytes) at the Mu pin: the package declares
+#  no PCDs/GUIDs of its own; all configuration lives in warsaw.dsc.
+##

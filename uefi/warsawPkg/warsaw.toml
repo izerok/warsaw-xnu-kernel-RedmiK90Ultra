@@ -1,0 +1,31 @@
+#
+# Device config for build_uefi.py -- place at Resources/Configs/warsaw.toml
+# in the Mu tree when building. Adapted from Resources/Configs/annibale.toml
+# at the Mu pin (90721af9). Source classes per this package's README.md.
+#
+
+#
+# Boot Shim Configs
+#
+[boot_shim]
+requires_kernel_header = true # [S2] same XNU payload chain as annibale
+
+#
+# UEFI FD Configs
+#
+[uefi_fd]
+base = 0xA7100000 # [S1] warsaw.conf FD_BASE (device's own xbl_config embedded DT)
+size = 0x300000   # [S1] warsaw.conf FD_SIZE; 0xA7100000+0x300000 = 0xA7400000 = start of UEFI_FD_Reserved
+
+#
+# Android Boot Image Kernel Configs
+#
+[boot_image_kernel]
+kernel_compression = "gzip" # [S2]
+append_dtb         = true   # [S2]
+
+#
+# Android Boot Image Configs
+#
+[boot_image]
+header_version = 4 # [S2] SM8750 boot image header v4 (to re-confirm against warsaw stock boot image on hardware)

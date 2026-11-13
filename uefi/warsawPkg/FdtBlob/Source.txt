@@ -1,0 +1,12 @@
+Device tree for REDMI K90 Ultra (warsaw, SM8750):
+
+warsaw.dtb is NOT included in this scaffold directory. At package assembly
+time, copy the fork's common/devices/warsaw.dtb here. That file is the
+device's runtime FDT (adb pull /sys/firmware/fdt from a real K90 Ultra,
+895,020 bytes, SHA-256 6296d0d6...576a, recorded in common/devices/warsaw.conf).
+
+Note the difference from annibale: annibalePkg's FdtBlob was assembled by
+merging the vendor_boot_a base DT with the dtbo_a overlay (fdtoverlay).
+The runtime FDT pulled from /sys/firmware/fdt is the already-merged tree
+the device booted with, so it should serve the same role -- equivalence
+[S2] in this package's source classes, to be confirmed on hardware.

@@ -1,0 +1,16 @@
+# MemoryMapLib.inf -- adapted from annibalePkg (Mu pin 90721af9); fresh FILE_GUID.
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = MemoryMapLib
+  FILE_GUID                      = D70FDB0A-0E01-4BCB-883E-144AA2C9DB04
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = MemoryMapLib
+
+[Sources]
+  MemoryMapLib.c
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  MdePkg/MdePkg.dec
+  SiliciumPkg/SiliciumPkg.dec

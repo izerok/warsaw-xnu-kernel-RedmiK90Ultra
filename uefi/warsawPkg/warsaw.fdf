@@ -1,0 +1,115 @@
+##
+#  warsawPkg flash description -- scaffold adapted from annibalePkg
+#  (iola1999/hackios-mu-silicium @ 90721af9041bcf8683d12583cc12ba4e4658a48b).
+#  FD_BASE / FD_SIZE / FD_BLOCKS come from Resources/Configs/warsaw.toml at
+#  build time (see warsaw.toml in this package): FD_BASE=0xA7100000,
+#  FD_SIZE=0x300000 -- both [S1] from warsaw.conf (the device's own
+#  xbl_config embedded DT). FD_SIZE 0x300000 = exactly 3,145,728 bytes,
+#  the size build-bootimg requires of a dropped-in SILICIUM_UEFI.fd.
+#  NOT built, NOT device-verified.
+#
+#  Copyright (c) 2018, Linaro Limited. All rights reserved.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+################################################################################
+#
+# FD Section
+################################################################################
+
+[FD.SILICIUM_UEFI]
+BaseAddress   = $(FD_BASE)|gArmTokenSpaceGuid.PcdFdBaseAddress # The base address of the FLASH Device.
+Size          = $(FD_SIZE)|gArmTokenSpaceGuid.PcdFdSize        # The size in bytes of the FLASH Device
+ErasePolarity = 1
+
+# This one is tricky, it must be: BlockSize * NumBlocks = Size
+BlockSize     = 0x1000
+NumBlocks     = $(FD_BLOCKS)
+
+0x00000000|$(FD_SIZE)
+gArmTokenSpaceGuid.PcdFvBaseAddress|gArmTokenSpaceGuid.PcdFvSize
+FV = FVMAIN_COMPACT
+
+################################################################################
+#
+# FV Section
+#
+################################################################################
+
+[FV.FvMain]
+FvNameGuid         = 68B5903D-D4FD-49EE-98DE-0F8BCD7A53D3 # fresh GUID; must NOT reuse annibale's CD8D4C84-...
+BlockSize          = 0x1000
+NumBlocks          = 0        # This FV gets compressed so make it just big enough
+FvAlignment        = 8        # FV alignment and FV attributes setting.
+ERASE_POLARITY     = 1
+MEMORY_MAPPED      = TRUE
+STICKY_WRITE       = TRUE
+LOCK_CAP           = TRUE
+LOCK_STATUS        = TRUE
+WRITE_DISABLED_CAP = TRUE
+WRITE_ENABLED_CAP  = TRUE
+WRITE_STATUS       = TRUE
+WRITE_LOCK_CAP     = TRUE
+WRITE_LOCK_STATUS  = TRUE
+READ_DISABLED_CAP  = TRUE
+READ_ENABLED_CAP   = TRUE
+READ_STATUS        = TRUE
+READ_LOCK_CAP      = TRUE
+READ_LOCK_STATUS   = TRUE
+
+  !include Include/APRIORI.inc
+  !include Include/DXE.inc
+  !include Include/RAW.inc
+
+  # RAM Manager
+  INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+
+  # SmBios
+  INF MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf
+
+  # ACPI
+  #INF MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+  #INF MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
+  #INF RuleOverride = ACPITABLE warsaw/AcpiTables.inf
+
+  # IORT DT
+  INF QcomPkg/Drivers/IortDtDxe/IortDtDxe.inf
+
+  # Device Tree
+  INF EmbeddedPkg/Drivers/DtPlatformDxe/DtPlatformDxe.inf
+  FILE FREEFORM = 2B087354-959E-442D-971A-345F1595137A {
+    SECTION RAW = warsawPkg/FdtBlob/warsaw.dtb
+    SECTION UI = "DeviceTreeBlob"
+  }
+
+  !include QcomPkg/Extra.fdf.inc
+
+[FV.FVMAIN_COMPACT]
+FvAlignment        = 8
+ERASE_POLARITY     = 1
+MEMORY_MAPPED      = TRUE
+STICKY_WRITE       = TRUE
+LOCK_CAP           = TRUE
+LOCK_STATUS        = TRUE
+WRITE_DISABLED_CAP = TRUE
+WRITE_ENABLED_CAP  = TRUE
+WRITE_STATUS       = TRUE
+WRITE_LOCK_CAP     = TRUE
+WRITE_LOCK_STATUS  = TRUE
+READ_DISABLED_CAP  = TRUE
+READ_ENABLED_CAP   = TRUE
+READ_STATUS        = TRUE
+READ_LOCK_CAP      = TRUE
+READ_LOCK_STATUS   = TRUE
+
+  INF SiliciumPkg/Sec/Sec.inf
+
+  FILE FV_IMAGE = 9E21FD93-9C72-4c15-8C4B-E77F1DB2D792 {
+    SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {
+      SECTION FV_IMAGE = FVMAIN
+    }
+  }
+
+  !include SiliciumPkg/Common.fdf.inc

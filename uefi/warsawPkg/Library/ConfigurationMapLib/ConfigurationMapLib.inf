@@ -1,0 +1,15 @@
+# ConfigurationMapLib.inf -- adapted from annibalePkg (Mu pin 90721af9); fresh FILE_GUID.
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = ConfigurationMapLib
+  FILE_GUID                      = BF9B8B1A-E687-4C4D-A7E9-AD53E91759FF
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = ConfigurationMapLib
+
+[Sources]
+  ConfigurationMapLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  QcomPkg/QcomPkg.dec
