@@ -542,25 +542,19 @@ struct rwa_draw {
 };
 
 /* A function linked into the fragment stage at pipeline time (MTLLinkedFunctions).
- * These two are the driver's copy of air_metal.h's rwa_stitch_node /
- * rwa_linked_function; the library asserts the layouts agree.  RenderBox in iOS 26
- * links a stitched function into a fragment shader that calls an extern visible
- * `custom_fn`, and without this the frontend refuses the pipeline by name. */
-struct rwa_stitch_node {
-	const void *bitcode;
-	size_t size;
-	const char *function;
-	unsigned num_args;
-	const int *args;
-	unsigned num_after;
-	const unsigned *after;
-};
-struct rwa_linked_function {
-	const char *name;
-	unsigned num_nodes;
-	const struct rwa_stitch_node *nodes;
-	unsigned output;
-};
+ * rwa_stitch_node / rwa_linked_function are the library's structs; the library
+ * asserts the layouts agree.  RenderBox in iOS 26 links a stitched function into
+ * a fragment shader that calls an extern visible `custom_fn`, and without this
+ * the frontend refuses the pipeline by name.
+ *
+ * This file used to carry its own copy of the two structs (of air_metal.h, where
+ * they lived at the old pin e052bd49).  Upstream 438e0ca (2026-11-12; phase-5 pin
+ * upgrade) moved the definitions verbatim -- field for field, checked against
+ * both the old air_metal.h text and this file's removed copy -- from air_metal.h
+ * into air_metal_copy.h, which redwoodmetal_mesa.inc below already includes, so
+ * the driver's copy collided with the header's (redefinition errors, fork runs
+ * 43343154927 / 43343100231).  The copy is gone; the header's are the single
+ * source now. */
 
 /*
  * The library's MTLVertexFormat table, checked against Apple's own header HERE, where the
