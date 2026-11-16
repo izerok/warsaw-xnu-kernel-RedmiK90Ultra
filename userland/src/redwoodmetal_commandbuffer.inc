@@ -996,6 +996,13 @@ done:
 		return;
 	}
 	__atomic_store_n(&fence_wait, 0, __ATOMIC_RELEASE);
+	/* v93 (tranche 11): the fence has cleared, so the GPU's writes are done -- copy them
+	 * back into every buffer a texture views, before this command buffer reads as
+	 * finished. Without it the icon cache and every other texture-from-buffer reader
+	 * keeps the bytes it had before the GPU wrote. */
+	if (mesa.buffer_textures_writeback != NULL) {
+		mesa.buffer_textures_writeback([[_queue device] mesaDevice]);
+	}
 	_status = RW_CB_COMPLETED;   /* the fence has been paid, and only now */
 }
 

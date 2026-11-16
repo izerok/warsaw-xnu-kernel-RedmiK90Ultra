@@ -1,5 +1,14 @@
 #include "../../tools/mesa/air/air_metal_copy.h"
 
+/* v93 (tranche 11): the library at 438e0ca exports rwa_buffer_textures_writeback, but
+ * air_metal_copy.h -- the copy this tree compiles against -- declares only
+ * rwa_buffer_textures_refresh, so this file says the one line itself. Do NOT "fix" this
+ * the way upstream did (upstream deleted this include and hand-wrote the whole header):
+ * our PHASE5 fix went the other way, deleting our local definitions so this include
+ * stays the single source of truth for the shared declarations, and the two approaches
+ * must never be mixed. */
+void rwa_buffer_textures_writeback(struct rwa_device *device);
+
 static struct {
 	void *handle;
 	__typeof__(&rwa_buffer_copy) buffer_copy;
@@ -7,6 +16,7 @@ static struct {
 	__typeof__(&rwa_texture_generate_mipmaps) texture_generate_mipmaps;
 	__typeof__(&rwa_texture_from_buffer) texture_from_buffer;
 	__typeof__(&rwa_buffer_textures_refresh) buffer_textures_refresh;
+	__typeof__(&rwa_buffer_textures_writeback) buffer_textures_writeback;
 	struct rwa_device *(*device_open)(char *, size_t);
 	void (*device_close)(struct rwa_device *);
 	const char *(*device_name)(struct rwa_device *);
@@ -96,6 +106,7 @@ mesa_available(void)
 	*(void **)&mesa.texture_generate_mipmaps = dlsym(mesa.handle, "rwa_texture_generate_mipmaps");
 	*(void **)&mesa.texture_from_buffer = dlsym(mesa.handle, "rwa_texture_from_buffer");
 	*(void **)&mesa.buffer_textures_refresh = dlsym(mesa.handle, "rwa_buffer_textures_refresh");
+	*(void **)&mesa.buffer_textures_writeback = dlsym(mesa.handle, "rwa_buffer_textures_writeback");
 	*(void **)&mesa.device_open = dlsym(mesa.handle, "rwa_device_open");
 	*(void **)&mesa.device_close = dlsym(mesa.handle, "rwa_device_close");
 	*(void **)&mesa.device_name = dlsym(mesa.handle, "rwa_device_name");

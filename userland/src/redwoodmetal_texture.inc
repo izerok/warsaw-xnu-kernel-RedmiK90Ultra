@@ -104,6 +104,20 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 	return self;
 }
 
+/* Not part of MTLTexture: the buffer -newTextureWithDescriptor:offset:bytesPerRow: laid
+ * the texture over, which the buffer's -buffer needs to find again. A texture owns a
+ * reference to the buffer it sits on: the buffer must outlive the texture, because the
+ * texture's copy-back reads it. */
+- (void)redwoodSetBuffer:(id)buffer offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
+{
+	if (_buffer != buffer) {
+		[_buffer release];
+		_buffer = [buffer retain];
+	}
+	_bufferOffset = offset;
+	_bufferBytesPerRow = bytesPerRow;
+}
+
 - (void)dealloc
 {
 	if (_texture != NULL) {
@@ -113,6 +127,7 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 	if (_iosurface != NULL) {
 		CFRelease(_iosurface);
 	}
+	[_buffer release];   /* after the texture, whose copy-back reads the buffer */
 	[_owner release];   /* AIR resources need the device through destruction. */
 	[super dealloc];
 }
@@ -134,9 +149,14 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 - (id)parentTexture                { return nil; }
 - (NSUInteger)parentRelativeLevel  { return 0; }
 - (NSUInteger)parentRelativeSlice  { return 0; }
-- (id)buffer                       { return nil; }
-- (NSUInteger)bufferOffset         { return 0; }
-- (NSUInteger)bufferBytesPerRow    { return 0; }
+/* A texture the buffer's -newTextureWithDescriptor:offset:bytesPerRow: made is a view of
+ * that buffer: -buffer must return the buffer, not nil. The old nil here broke the
+ * writeback round trip at its first step -- -writeback cannot copy back into a buffer
+ * it cannot find -- and the nil only ever showed up in code paths that asked for the
+ * buffer of a texture made this way, so nothing else in the driver noticed. */
+- (id)buffer                       { return _buffer; }
+- (NSUInteger)bufferOffset         { return _bufferOffset; }
+- (NSUInteger)bufferBytesPerRow    { return _bufferBytesPerRow; }
 - (IOSurfaceRef)iosurface          { return (IOSurfaceRef)_iosurface; }
 - (NSUInteger)iosurfacePlane       { return _iosurfacePlane; }
 /* MTLStorageModeShared, except for a multisample texture, which Metal does not allow to be

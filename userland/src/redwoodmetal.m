@@ -1336,10 +1336,15 @@ struct gem_close { uint32_t handle, pad; };
 	CFTypeRef _iosurface;
 	NSUInteger _iosurfacePlane;
 	int _responsibleProcess;   /* as on the buffer: accounting, not behaviour */
+	id _buffer;                /* v93 (tranche 11): the buffer this texture views */
+	NSUInteger _bufferOffset;
+	NSUInteger _bufferBytesPerRow;
 }
 - (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
 	texture:(struct rwa_texture *)texture shape:(const struct rwa_texture_shape *)shape
 	iosurface:(CFTypeRef)surface plane:(NSUInteger)plane;
+/* Not part of MTLTexture: see redwoodmetal_texture.inc. */
+- (void)redwoodSetBuffer:(id)buffer offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow;
 @property (readonly) struct rwa_texture *mesaTexture;
 /* Not part of MTLTexture: the depth or stencil aspect of this texture, one float and one
  * byte per texel. Metal's own -getBytes: has no aspect to name and the compiler library
@@ -3135,9 +3140,13 @@ checkenv_or_name(void)
 		rw_print("%s\n", why);
 		return nil;
 	}
-	return [[RedwoodMetalTexture alloc] initWithRedwoodDevice:_owner
-							 texture:texture
-							   shape:&shape iosurface:NULL plane:0];
+	/* v93 (tranche 11): the texture is a view of this buffer, so -buffer on it must
+	 * find the buffer again -- -writeback copies back into it. */
+	RedwoodMetalTexture *made = [[RedwoodMetalTexture alloc] initWithRedwoodDevice:_owner
+									 texture:texture
+									   shape:&shape iosurface:NULL plane:0];
+	[made redwoodSetBuffer:self offset:offset bytesPerRow:bytesPerRow];
+	return made;
 }
 
 - (id)newLinearTextureWithDescriptor:(id)descriptor offset:(NSUInteger)offset
