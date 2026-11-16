@@ -60,7 +60,7 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel|"UNKNOWN" # [S3] annibale used "13" (its own model number); warsaw's is not in our materials -- do not copy
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailModel|"warsaw" # [S1] device codename
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailSku|"UNKNOWN" # [S3] annibale used "CPH2653"; warsaw equivalent unknown (marketing model 2604FRK1EC is NOT this field's proven value)
-  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemBoardModel|"UNKNOWN" # [S3] annibale used "23893"; warsaw board model unknown
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemBoardModel|"12" # [S1] xiaomi,miboard-id = <0xC 0> (12) in MiCode vendor_qcom_opensource_display-devicetree@warsaw-w-oss, display/warsaw/warsaw-sde-display-mtp-overlay.dts:12; cross-check: qcom,board-id <0x40008 0> in the same file matches warsaw.dtb, and annibale DTBO binary reads 11 = 0xB matching its overlay source
 
   #
   # Simple Frame Buffer
