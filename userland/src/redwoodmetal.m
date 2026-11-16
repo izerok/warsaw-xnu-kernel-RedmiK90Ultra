@@ -100,6 +100,7 @@
 #import <objc/runtime.h>
 #include <IOKit/IOKitLib.h>
 #include <mach/mach_time.h>
+#include <mach/mach_host.h>    /* v103: host_statistics64 for the lifecycle beat */
 #include <dlfcn.h>
 #include <dispatch/dispatch.h>   /* rw_stitch_install_hooks' dispatch_once */
 
@@ -270,11 +271,28 @@ rwm_install_crash_logger(void)
  * or leaves through exit(). This tells the two apart, and dates the moment: a beat every
  * two seconds, an atexit line if it leaves of its own accord, and a line if SIGTERM (what
  * launchd sends first) ever arrives. Only iconservicesagent prints, so the log stays small.
+ *
+ * v103 (tranche 11): SpringBoard still died twice in v102 with no "rwm CRASH" line either,
+ * and v102's "0 crashes" is 0 SIGSEGV only -- the v71 beat was watching the wrong process.
+ * The same loggers now watch SpringBoard and backboardd as well, and the beat also says how
+ * much memory the machine has free, wired and compressed, every two seconds, so a death
+ * with no signal and a shrinking free count points at memory pressure instead of a bug in
+ * this driver.
  * --------------------------------------------------------------------------------------- */
 static const char *
 rwm_prog(void)
 {
 	return getprogname() ? getprogname() : "?";
+}
+
+static int
+rwm_lifecycle_wanted(void)
+{
+	const char *prog = getprogname();
+	return prog != NULL &&
+	    (strcmp(prog, "iconservicesagent") == 0 ||
+	     strcmp(prog, "SpringBoard") == 0 ||
+	     strcmp(prog, "backboardd") == 0);
 }
 
 static void
@@ -298,7 +316,18 @@ rwm_beater(void *arg)
 {
 	(void)arg;
 	for (;;) {
-		fprintf(stderr, "rwm beat: %s %d\n", rwm_prog(), getpid());
+		vm_statistics64_data_t vm = { 0 };
+		mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+		if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+		    (host_info64_t)&vm, &count) == KERN_SUCCESS) {
+			fprintf(stderr, "rwm beat: %s %d free=%uMiB wire=%uMiB comp=%uMiB\n",
+			    rwm_prog(), getpid(),
+			    vm.free_count * (unsigned)(vm_page_size >> 20),
+			    vm.wire_count * (unsigned)(vm_page_size >> 20),
+			    vm.compressor_page_count * (unsigned)(vm_page_size >> 20));
+		} else {
+			fprintf(stderr, "rwm beat: %s %d\n", rwm_prog(), getpid());
+		}
 		sleep(2);
 	}
 	return NULL;
@@ -308,12 +337,11 @@ __attribute__((constructor))
 static void
 rwm_install_lifecycle_loggers(void)
 {
-	const char *prog = getprogname();
 	struct sigaction action = { 0 };
 	pthread_t thread;
 	int signals[] = { SIGTERM, SIGINT, SIGHUP };
 
-	if (!prog || strcmp(prog, "iconservicesagent") != 0) {
+	if (!rwm_lifecycle_wanted()) {
 		return;
 	}
 	action.sa_sigaction = rwm_term_logger;
