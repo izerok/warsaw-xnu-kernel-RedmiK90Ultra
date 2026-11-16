@@ -868,7 +868,16 @@ sb26_install_crash_logger(void)
  * by sb26_glass_conf() further down); the defaults here apply until its first
  * parse and equal the shipped values.
  * --------------------------------------------------------------------------------------- */
-static int sb26_icons_cold_ms = 300;
+/* v96 (tranche 11): the cold wait was 300 ms; upstream's verified value on their line
+ * is 80 ms -- a live agent answers a tap in tens of milliseconds, so a tap should not
+ * wait 300 ms on the main thread for a repeat cold iconservices request. Adopted
+ * provisionally: upstream's own notes say their v96-v98 glass/cold changes did NOT fix
+ * crashes, and v99's 120 ms did not help either, so 80 is a starting value, not a
+ * measured optimum on our line; tap-burst data decides the final number. The first
+ * generation still has its own 1500 ms off-thread window (icon_first_ms), untouched.
+ * No third key is added: upstream's xpc_cold_ms addressed a wait point this fork
+ * restructured away (H2 waits on ctx->done), so our two keys stay the whole surface. */
+static int sb26_icons_cold_ms = 80;
 static int sb26_icons_first_ms = 1500;
 
 #define SB26_ICONS_GEN_MAX 64
@@ -1430,7 +1439,7 @@ sb26_glass_defaults(void)
     glass_search = 0.50f;
     glass_widget = 0.34f;
     glass_on = 1;
-    sb26_icons_cold_ms = 300;
+    sb26_icons_cold_ms = 80;   /* v96 (tranche 11): was 300; see the note over the static init */
     sb26_icons_first_ms = 1500;
 }
 

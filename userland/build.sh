@@ -854,7 +854,7 @@ PY
 		printf '# icon_cold_ms: sync wait for a repeat cold iconservices request (H2)\n'
 		printf '# icon_first_ms: window for a bundle'\''s first icon generation; past it\n'
 		printf '# the generation finishes asynchronously and re-posts com.redwood.icons\n'
-		printf 'icon_cold_ms = %s\n' "${GLASS_ICON_COLD_MS:-300}"
+		printf 'icon_cold_ms = %s\n' "${GLASS_ICON_COLD_MS:-80}"
 		printf 'icon_first_ms = %s\n' "${GLASS_ICON_FIRST_MS:-1500}"
 	} > root/etc/glass.conf
 	# Metal's discovery is a whole rc of its own (RC=rc.metal), not a file this script tests:
