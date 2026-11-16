@@ -671,7 +671,13 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 		    "import plane 0 only", plane);
 		return NULL;
 	}
-	if (!is_ycbcr_biplanar && (surface.width != want->width || surface.height != want->height)) {
+	/* v97 (tranche 11): a surface this driver already owns is a real surface, even when it
+	 * is bigger than the descriptor -- an imported drawable must not be refused for that.
+	 * The strict test (exact size) sent every such import back with "surface rejected", so
+	 * the drawable path found no matching surface and reported "no surface has been set
+	 * for this drawable". A smaller surface is still refused: a drawable must never be
+	 * asked to hand out more pixels than the surface holds. */
+	if (!is_ycbcr_biplanar && (surface.width < want->width || surface.height < want->height)) {
 		rwd_say(why, why_size, "surface %u is %ux%u and the descriptor asks for %ux%u",
 		    id, surface.width, surface.height, want->width, want->height);
 		return NULL;

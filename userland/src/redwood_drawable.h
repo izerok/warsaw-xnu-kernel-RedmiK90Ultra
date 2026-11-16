@@ -194,6 +194,24 @@ struct rwa_texture *rwd_texture_for_surface(struct rwa_device *mesa_device, void
  * decides whether a drawable can exist in this boot. Said once, by the first caller. */
 int rwd_import_available(void);
 
+/* v97 (tranche 11, upstream ab4123be): iOS 26 hands this driver pixel formats it does not
+ * actually mean. The ten-bit family (94 'l10r' and the XR group 550-555) is backed by the
+ * same four-bytes-a-pixel BGRA surfaces as 80/81 -- the kernel's MiniIOSurface already
+ * renames the FourCCs -- but Metal still reports the original number, and every consumer
+ * of a pixel format here (the AIR shape, the shader key, the blend table) branches on it.
+ * Canonicalizing at the two places a descriptor enters -- pipeline color attachments and
+ * newTextureWithDescriptor: -- makes the rest of the driver see the format that the surface
+ * actually is, instead of teaching every consumer the whole alias table. Odd members of
+ * the family map to 81 (sRGB), even to 80, exactly as MiniIOSurface does. */
+static inline unsigned
+rwd_canonical_pixel_format(unsigned fmt)
+{
+	if (fmt == 94 || (fmt >= 550 && fmt <= 555)) {
+		return (fmt == 551 || fmt == 553 || fmt == 555) ? 81u : 80u;
+	}
+	return fmt;
+}
+
 #ifdef __cplusplus
 }
 #endif
