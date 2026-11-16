@@ -180,6 +180,25 @@ lock_screen_manager(void)
 
 /* 1: locked, an unlock was asked for; 0: not locked; -1: no lock screen manager to ask. */
 
+/* v97 (tranche 11): on this build a locked, unlit panel drops the unlock
+ * request (the lock screen is only ever seen when the panel is dark, so
+ * this path is the only one that matters). Turn the panel on before asking,
+ * through the springboard backlight controller, so the panel is up by the
+ * time the user is asked. A locked-but-lit panel is the same call and costs
+ * nothing. */
+static void
+wake_screen_for_unlock(void)
+{
+    Class sb = objc_getClass("SBBacklightController");
+    if (!sb) return;
+    id controller = ((id (*)(Class, SEL))objc_msgSend)(sb,
+        sel_registerName("sharedInstance"));
+    if (!controller) return;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(controller,
+        sel_registerName("turnOnScreenFullyWithBacklightSource:"),
+        (BOOL)1);
+}
+
 static int
 unlock_once(const char *why)
 {
@@ -196,6 +215,7 @@ unlock_once(const char *why)
         notify_post("com.redwood.wallpaper.suspend");
         return 0;
     }
+    wake_screen_for_unlock();
     BOOL answer = ((BOOL (*)(id, SEL, long, id))objc_msgSend)(manager, unlock_ui, UNLOCK_SOURCE_COVER_SHEET, nil);
     int locked_after = ((BOOL (*)(id, SEL))objc_msgSend)(manager, locked);
     fprintf(stderr, "sb26: unlock %s: answer=%d locked_after=%d\n", why, answer, locked_after);
@@ -265,6 +285,18 @@ install_unlock(void)
         if (unlock_once("notification") == 0) {
             fprintf(stderr, "sb26: unlock notification: not locked\n");
             notify_post("com.redwood.wallpaper.suspend");
+            return;
+        }
+        /* v97 (tranche 11): a locked, unlit panel can also drop this
+         * notification's unlock before the panel is up. When the unlock was
+         * asked but the panel is still locked, ask once more after 300 ms;
+         * by then the panel is on and the retry lands. */
+        id manager = lock_screen_manager();
+        if (manager && ((BOOL (*)(id, SEL))objc_msgSend)(manager, sel_registerName("isUILocked"))) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * (int64_t)NSEC_PER_MSEC),
+                dispatch_get_main_queue(), ^{
+                unlock_once("notification-retry");
+            });
         }
     });
 
@@ -601,9 +633,50 @@ sb26_hook_CFBundleCopyBundleLocalizations(CFBundleRef bundle)
  * Ensure .GlobalPreferences.plist in /private/var/mobile/Library/Preferences/
  * has AppleLanguages with "zh-Hans-CN" prioritized.
  */
+/* v97 (tranche 11): O_TRUNC writes a half file if the process dies mid-write,
+ * and cfprefsd reads the file as-is; a half file is the corrupted plist that
+ * put the device in an unlock loop. Write to a temp file in the same directory
+ * (same filesystem, so rename(2) is atomic), fsync it so the bytes are on
+ * storage before the name moves, then rename it over the target. */
+static void
+sb26_atomic_write_file(const char *path, const void *buf, size_t len)
+{
+    char tmp[PATH_MAX];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { fprintf(stderr, "sb26: write %s: %s\n", tmp, strerror(errno)); return; }
+    if (write(fd, buf, len) != (ssize_t)len) {
+        fprintf(stderr, "sb26: write %s: %s\n", tmp, strerror(errno));
+        close(fd);
+        unlink(tmp);
+        return;
+    }
+    if (fsync(fd) != 0) {
+        fprintf(stderr, "sb26: fsync %s: %s\n", tmp, strerror(errno));
+        close(fd);
+        unlink(tmp);
+        return;
+    }
+    close(fd);
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "sb26: rename %s -> %s: %s\n", tmp, path, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    chown(path, 501, 501);
+    chmod(path, 0644);
+}
+
 static void
 sb26_ensure_chinese_preferences(void)
 {
+    /* v97 (tranche 11): only SpringBoard may write the global preferences.
+     * Every process with this dylib loaded runs this function (v89's
+     * daemon-hosted case), and a daemon writing here races SpringBoard's own
+     * cfprefsd. */
+    const char *prog = getprogname();
+    if (!prog || strcmp(prog, "SpringBoard") != 0) return;
+
     static int preferences_ensured = 0;
     if (preferences_ensured) return;
     preferences_ensured = 1;
@@ -634,6 +707,11 @@ sb26_ensure_chinese_preferences(void)
                         CFRelease(data);
                         if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID()) dict = (CFMutableDictionaryRef)plist;
                         else if (plist) CFRelease(plist);
+                    } else {
+                        /* v97 (tranche 11): CFDataCreateWithBytesNoCopy failed
+                         * but buf was allocated with plain malloc, so it is
+                         * ours to free -- a per-boot leak before this. */
+                        free(buf);
                     }
                 } else {
                     free(buf);
@@ -681,14 +759,7 @@ sb26_ensure_chinese_preferences(void)
 
         CFDataRef xml_data = CFPropertyListCreateData(kCFAllocatorDefault, dict, kCFPropertyListXMLFormat_v1_0, 0, NULL);
         if (xml_data) {
-            int wfd = open(pref_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (wfd >= 0) {
-                ssize_t written = write(wfd, CFDataGetBytePtr(xml_data), (size_t)CFDataGetLength(xml_data));
-                (void)written;
-                close(wfd);
-                chown(pref_path, 501, 501);
-                chmod(pref_path, 0644);
-            }
+            sb26_atomic_write_file(pref_path, CFDataGetBytePtr(xml_data), (size_t)CFDataGetLength(xml_data));
             CFRelease(xml_data);
         }
         CFPreferencesSetAppValue(CFSTR("AppleLanguages"), new_langs, kCFPreferencesAnyApplication);
