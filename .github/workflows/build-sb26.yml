@@ -1,0 +1,82 @@
+# Build libredwood-sb26.dylib on its own, straight from this checkout.
+#
+# Why a second workflow for one dylib (tranche 11, upstream v96): the sb26
+# injection is the only userland product that needs no userland clone at all --
+# inject_sb26.c and its .inc files compile against system frameworks only, and
+# the four compile units are the same ones the arm64e job in
+# build-host-tools.yml builds. Landing it here as well means a broken or missing
+# userland clone no longer takes the sb26 product down with it, and a failed
+# sb26 compile no longer hides inside a job that builds everything else.
+#
+# This does NOT replace the arm64e job: that job still works in this fork (it
+# overlays this repo's userland/src onto the clone and lands the same dylib in
+# metal-artifacts), and it stays the primary landing. This workflow lands in its
+# own orphan branch, sb26-artifacts, so the two can never clobber each other,
+# and a byte comparison between the two landings is the check that they agree.
+#
+# The compile line is the arm64e job's, copied verbatim (same four compile
+# units, same flags, same install name), so the two builds stay the same build.
+name: build sb26 dylib
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-sb26.yml'
+      - 'userland/src/inject_sb26.c'
+      - 'userland/src/inject_sb26_airdrop.inc'
+      - 'userland/src/inject_sb26_uninstall.inc'
+      - 'userland/src/inject_sb26_layers.c'
+      - 'userland/src/inject_sb26_rate.c'
+      - 'userland/src/input26_service.c'
+      - 'userland/src/inject_posterboard.c'
+
+permissions:
+  contents: write
+
+jobs:
+  build-sb26:
+    name: build sb26 dylib
+    runs-on: macos-15
+    steps:
+      - name: Select Xcode
+        run: |
+          ls -d /Applications/Xcode_*.app || true
+          sudo xcode-select -s /Applications/Xcode_26.3.app 2>/dev/null || \
+          sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
+          xcodebuild -version
+      - uses: actions/checkout@v4
+      - name: Compile libredwood-sb26.dylib
+        run: |
+          set -e
+          mkdir -p obj
+          CC="/usr/bin/xcrun -sdk iphoneos clang -arch arm64e -miphoneos-version-min=26.0"
+          $CC -dynamiclib -install_name /redwood/lib/libredwood-sb26.dylib -Os -Wall -Wextra \
+              -framework CoreFoundation -framework CoreGraphics -framework Metal \
+              -lobjc -lMobileGestalt \
+              userland/src/inject_sb26.c userland/src/inject_sb26_layers.c userland/src/inject_sb26_rate.c userland/src/inject_posterboard.c \
+              -o obj/libredwood-sb26.dylib
+          /usr/bin/codesign --force --sign - obj/libredwood-sb26.dylib
+          otool -L obj/libredwood-sb26.dylib
+          shasum -a 256 obj/libredwood-sb26.dylib
+      - name: Upload libredwood-sb26.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: libredwood-sb26
+          path: obj/libredwood-sb26.dylib
+          if-no-files-found: error
+      - name: Land libredwood-sb26.dylib on sb26-artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          rm -rf /tmp/sb26-artifacts
+          mkdir -p /tmp/sb26-artifacts
+          cp obj/libredwood-sb26.dylib /tmp/sb26-artifacts/libredwood-sb26.dylib
+          cd /tmp/sb26-artifacts
+          git init -q -b sb26-artifacts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add libredwood-sb26.dylib
+          git commit -qm "sb26 dylib ${{ github.sha }}"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push -f origin sb26-artifacts
