@@ -130,6 +130,18 @@ jobs:
           done
           ls -l obj/
           for f in obj/*; do printf '%s ' "$f"; otool -hv "$f" 2>/dev/null | tail -1; done
+      - name: Write the metal source stamp
+        # Tranche 11 (upstream v97+): build.sh refuses a libredwoodmetal.dylib whose
+        # sources it cannot match. The stamp is the first 12 hex of the SHA-256 of
+        # the three sources the dylib was built from, written next to it in obj/ so
+        # it lands in metal-artifacts (and the arm64e-progs artifact) with the dylib
+        # itself. The sources here are the overlaid ones -- this repo's userland/src
+        # -- which is exactly what the dylib was compiled from.
+        run: |
+          set -e
+          cd /tmp/u/userland
+          cat src/redwoodmetal.m src/redwooddrawable.m src/redwood_drawable.h | shasum -a 256 | cut -c1-12 > obj/.metal-stamp
+          cat obj/.metal-stamp
       - uses: actions/upload-artifact@v4
         with:
           name: arm64e-progs
