@@ -1915,7 +1915,23 @@ sb26_fill_one_icon(id view)
             cached = nil;   /* the artwork or the glass config moved: reload */
         } else {
             cg = sb26_ask(cached, "CGImage");
-            if (cg) sb26_icons_refreshed++;
+            if (cg) {
+                /* v104 (tranche 11): the old path re-asserted setContents: on every late
+                 * step, and every re-assert is a layer commit on the main thread for 23
+                 * icons at once -- exactly the steady CPU churn that makes the 120 Hz pipe
+                 * miss frames, and it fights the native updateImageAnimated: state machine.
+                 * A view whose layer still has contents is left alone; only a layer that
+                 * lost its contents (native nil, or a recycled view) gets the re-assert
+                 * below. H1 interaction: the pointer-equality skip above already handles
+                 * the case where the layer holds exactly our image; this covers the case
+                 * where native replaced it with its own non-nil image. Residual risk: a
+                 * non-nil black Metal-produced image is left in place -- the v59/v60
+                 * protection now only re-asserts on nil. If black icons reappear,
+                 * tighten this back to the pointer check. */
+                id have = sb26_ask(layer, "contents");
+                if (have) { sb26_icons_refreshed++; return; }
+                sb26_icons_refreshed++;
+            }
             else cached = nil;
         }
     }
@@ -2209,7 +2225,13 @@ install_sb26(void)
     install_unlock();
     sb26_install_all_icon_layer_fallbacks();
     {
-        static const int icon_delays[] = { 3, 8, 18, 30, 45, 60, 90, 120, 150 };
+        /* v104 (tranche 11): nine steps at 3, 8, 18, 30, 45, 60, 90, 120, 150 s were nine
+         * full home-screen passes; the late ones re-asserted icons that were already
+         * right. Five steps at 3, 8, 30, 60, 120 s cover the same window -- the first
+         * generation finishes off-thread inside icon_first_ms, and the late steps only
+         * catch stragglers. This is upstream's verified value on their line, not a
+         * measured optimum on ours; tap-burst data decides the final numbers. */
+        static const int icon_delays[] = { 3, 8, 30, 60, 120 };
         for (unsigned i = 0; i < sizeof(icon_delays) / sizeof(icon_delays[0]); i++)
             dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)icon_delays[i] * NSEC_PER_SEC),
                 dispatch_get_main_queue(), (void *)(uintptr_t)icon_delays[i], sb26_icon_late_step);
