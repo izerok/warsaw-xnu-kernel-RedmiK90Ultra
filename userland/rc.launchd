@@ -1,0 +1,25 @@
+# Hand process 1 over to the real iOS launchd.
+#
+# Why from /redwood and not /sbin/launchd.ios: the system volume (md0) is the
+# root, but a pid 1 execve() of a file on it fails in namei even though the same
+# binary runs fine when forked and even though 7-Zip extracts it by path. The
+# small root image (md1, /redwood) has no such problem -- exec of
+# /redwood/bin/child from pid 1 works -- so the same binary is carried there.
+#
+# init has already mounted /private/var (ramfs) and created its directories, and
+# stage0 has bound /redwood/LaunchDaemons onto /System/Library/LaunchDaemons and
+# /redwood/xpc onto /System/Library/xpc, so launchd reads the job cache that
+# mkcache.py wrote (launchd_unsecure_cache=1 skips its signature check).
+#
+# Register the Metal plugin before launchd hands out renderers (tranche 11,
+# upstream v102): the v94/v95 restructure of /etc/rc dropped this line, and
+# SpringBoard then took two SIGSEGVs a round once the glass/icon work ran;
+# restoring it left the 520 s window SIGSEGV-free. Any payload assembled from
+# this template must keep the line.
+#
+# Correction, not a clean baseline: v102's "0 crashes" is 0 SIGSEGV only.
+# SpringBoard still died twice in v102 with no rwm CRASH line (v103's lifecycle
+# logging exists to chase exactly that death), so this template is the
+# known-good registration, not a claim that the window was clean.
+/redwood/bin/metal_props on ../../../redwood/lib/RedwoodMetal RedwoodMetalDevice
+exec /redwood/sbin/launchd.ios
