@@ -28,11 +28,13 @@ __pycache__/
 *.orig
 *.rej
 
-# hackios-xnu-userland's files share this working tree (common/setup.sh)
+# hackios-xnu-userland's files share this working tree (common/setup.sh).
+# tools/apfs/ is the exception: restored into this repository (tranche 13,
+# from hackios-xnu-userland @438e0ca, the same files the overlay lays here),
+# so a clean checkout and CI have mkapfs.py without the overlay.
 /docs/air.md
 /docs/air-report.md
 /prebuilt/userland/
-/tools/apfs/
 /tools/air/
 /tools/mesa/
 /tools/metal/
