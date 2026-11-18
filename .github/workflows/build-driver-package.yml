@@ -43,6 +43,10 @@ on:
       - 'tools/k90auto/**'
       - 'tools/userland-driver/**'
       - 'userland/src/metal_plugin.plist'
+      - 'userland/src/inject_sb26.c'
+      - 'userland/src/inject_sb26_layers.c'
+      - 'userland/src/inject_sb26_rate.c'
+      - 'userland/src/inject_posterboard.c'
       - '.github/workflows/build-driver-package.yml'
 
 jobs:
@@ -87,6 +91,17 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/k90auto/package.py --driver-only
+
+      # build() prints the compiler log on failure, but keep the log files as
+      # well: the upload below runs only when the build step failed, so a
+      # future failure can be diagnosed from the run page without re-running.
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-package-build-logs
+          path: out/ios26-resume/bbmetal-device/*.build.log
+          if-no-files-found: warn
 
       - name: Check the staged package
         run: |

@@ -1670,7 +1670,10 @@ sb26_glass_cgcolor(double white, double alpha)
     id color;
     if (!cls) return nil;
     sel = sel_registerName("colorWithWhite:alpha:");
-    color = ((id (*)(Class, SEL, double, double))objc_msgSend)((id)cls, sel,
+    /* cls is already a Class: casting it to id warns -Wincompatible-pointer-types,
+       and SB26_FLAGS carries -Werror, so that warning fails the build (item 6,
+       attempt 2). Passing cls as-is sends the same pointer to objc_msgSend. */
+    color = ((id (*)(Class, SEL, double, double))objc_msgSend)(cls, sel,
         white, alpha);
     return sb26_ask(color, "CGColor");
 }

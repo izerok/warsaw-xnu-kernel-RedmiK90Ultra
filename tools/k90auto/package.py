@@ -459,8 +459,14 @@ BUNDLE_FLAGS = ["-bundle", *DRIVER_FLAGS]
 # the errors behind the data store PosterBoard cannot create, which is why the wallpaper is empty.
 SB26_SOURCES = ["userland/src/inject/inject_sb26.c", "userland/src/inject/inject_sb26_layers.c",
                 "userland/src/inject/inject_sb26_rate.c", "userland/src/inject/inject_posterboard.c"]
-SB26_FLAGS = ["-Os", "-Wall", "-Wextra", "-Werror", "-framework", "CoreFoundation", "-framework", "Metal",
-              "-lMobileGestalt"]
+# -Werror stays: the only warning these four units produce is the
+# -Wincompatible-pointer-types one at inject_sb26.c:1673, fixed at the source.
+# CoreGraphics is required too: inject_sb26.c calls CGImage/CGContext APIs
+# (26 call sites) and the green build-sb26.yml run links it (otool lists
+# CoreGraphics as a dependency of the dylib); without it the link fails with
+# undefined CG* symbols once the -Werror failure is gone.
+SB26_FLAGS = ["-Os", "-Wall", "-Wextra", "-Werror", "-framework", "CoreFoundation", "-framework", "CoreGraphics",
+              "-framework", "Metal", "-lMobileGestalt"]
 USERLAND_SOURCES = ["userland/src/inject/inject.c"]
 USERLAND_FLAGS = ["-O1", "-framework", "CoreFoundation", "-framework", "IOKit"]
 MEDIA_SOURCES = ["userland/src/inject/inject_media.c", "userland/src/services/camera_device.c",
@@ -606,9 +612,18 @@ def build(sources, install_name, flags, out, dynamic=True):
     kind = ["-dynamiclib", "-install_name", install_name] if dynamic else []
     arc = [] if "-fobjc-arc" in flags else ["-fno-objc-arc"]
     command = SDK + flags + [*arc, *kind, *[str(p) for p in resolved], "-lobjc", "-o", str(out)]
-    with out.with_suffix(".build.log").open("w") as log:
-        log.write(" ".join(command) + "\n")
-        subprocess.run(command, stdout=log, stderr=log, check=True, cwd=SRC_ROOT)
+    log_path = out.with_suffix(".build.log")
+    try:
+        with log_path.open("w") as log:
+            log.write(" ".join(command) + "\n")
+            subprocess.run(command, stdout=log, stderr=log, check=True, cwd=SRC_ROOT)
+    except subprocess.CalledProcessError:
+        # The compiler's own diagnostic lives only in the log file: print it
+        # before re-raising, or the CI run shows a bare CalledProcessError
+        # with no clue what clang complained about (item 6, attempt 2).
+        print(f"build failed; compiler output ({log_path}):", file=sys.stderr)
+        print(log_path.read_text(errors="replace"), file=sys.stderr)
+        raise
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(out)], check=True)
     return command
 
