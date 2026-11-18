@@ -1,0 +1,134 @@
+name: build driver package
+
+# Driver-only packaging (tranche 13, item 6): build the tools/userland-driver
+# driver (dylib + bundle), verify it, and upload the driver package.
+#
+# This is the whole CI scope for packaging, by decision (2026-11-19, user
+# "continue"): the full root.apfs assembly stays on a Mac host, for two
+# reasons, both recorded here so nobody "fixes" this workflow into doing it:
+#   1. build.sh stages the baseline root only from $IOS/rootfs, which is
+#      extracted from the IPSW on the host -- CI has no IPSW and no rootfs.
+#   2. root.apfs would contain Apple system content (launchd and the rest),
+#      which the fork red line forbids in any commit, branch, or artifact.
+# The Mac-host flow is: run the same command this workflow runs
+# (python3 tools/k90auto/package.py --driver-only) for the driver package,
+# then the full tools/k90auto/package.py for the root image.
+#
+# What runs here:
+#   1. fetch libredwoodair.dylib + air-build-record.json from the
+#      air-artifacts branch (published by build-mesa-air.yml). If the record
+#      is absent the run fails loudly here -- the branch predates item 5 until
+#      build mesa air goes green once with the new names.
+#   2. python3 tools/k90auto/package.py --driver-only: builds the shim, the
+#      driver (dylib + bundle) and sb26 from tools/userland-driver/ and
+#      userland/src, checks the AIR library against its record, verifies
+#      cpusubtype/install names, and stages
+#      out/ios26-resume/bbmetal-device/package/ (lib/, RedwoodMetal.bundle,
+#      air-build-record.json, manifest.json).
+#   3. independent checks on the staged package (adhoc signature, install
+#      name, cpusubtype, staged hash == manifest hash, bundle != dylib).
+#   4. upload the package as an artifact. Only our own code is in it: the
+#      driver, the shim, sb26, the AIR library, the plugin plist, the record
+#      and the manifest. No Apple system content.
+#
+# The driver this builds is the tools/ (iOS 26) copy, not the userland/src
+# (16.5 line) copy that build-host-tools compiles: different sources, different
+# install names, different hashes. item 7 (mkstandalone.py) asserts the root
+# disk carries this one.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/k90auto/**'
+      - 'tools/userland-driver/**'
+      - 'userland/src/metal_plugin.plist'
+      - '.github/workflows/build-driver-package.yml'
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app 2>/dev/null || \
+          sudo xcode-select -s /Applications/Xcode_26.2.app 2>/dev/null || true
+          xcodebuild -version
+          echo "iphoneos SDK $(xcrun --sdk iphoneos --show-sdk-version) at $(xcrun --sdk iphoneos --show-sdk-path)"
+
+      - name: Fetch the AIR library and its build record
+        # The air-artifacts branch is published by build-mesa-air.yml (orphan
+        # branch, force-updated every round). The library must be the renamed
+        # libredwoodair.dylib with its air-build-record.json; a branch that
+        # still carries libannibaleair.dylib predates item 5 and cannot feed
+        # this pack -- fail loudly instead of packing the wrong library.
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch air-artifacts \
+            https://github.com/${{ github.repository }}.git /tmp/air
+          ls -l /tmp/air
+          test -f /tmp/air/libredwoodair.dylib || \
+            { echo "::error::air-artifacts has no libredwoodair.dylib (build mesa air has not gone green since the item-5 rename)"; exit 1; }
+          test -f /tmp/air/air-build-record.json || \
+            { echo "::error::air-artifacts has no air-build-record.json (build mesa air has not gone green since the item-5 rename)"; exit 1; }
+          mkdir -p out/ios26-resume/bbmetal-device out/ios26-resume/mesa-arm64e
+          cp /tmp/air/libredwoodair.dylib out/ios26-resume/bbmetal-device/
+          cp /tmp/air/air-build-record.json out/ios26-resume/mesa-arm64e/
+          LIB_SHA=$(shasum -a 256 out/ios26-resume/bbmetal-device/libredwoodair.dylib | cut -d' ' -f1)
+          REC_SHA=$(python3 -c "import json; print(json.load(open('out/ios26-resume/mesa-arm64e/air-build-record.json'))['library_sha256'])")
+          [ "$LIB_SHA" = "$REC_SHA" ] || \
+            { echo "::error::AIR library sha $LIB_SHA != record sha $REC_SHA"; exit 1; }
+          echo "AIR library $LIB_SHA matches its record"
+
+      - name: Build and verify the driver package
+        run: |
+          set -euo pipefail
+          python3 tools/k90auto/package.py --driver-only
+
+      - name: Check the staged package
+        run: |
+          set -euo pipefail
+          P=out/ios26-resume/bbmetal-device/package
+          test -f "$P/manifest.json"
+          test -f "$P/lib/libredwoodmetal.dylib"
+          test -f "$P/lib/RedwoodMetal.bundle/RedwoodMetal"
+          test -f "$P/lib/RedwoodMetal.bundle/Info.plist"
+          test -f "$P/lib/libredwoodair.dylib"
+          test -f "$P/air-build-record.json"
+          echo "--- adhoc signature ---"
+          /usr/bin/codesign -dv "$P/lib/libredwoodmetal.dylib" 2>&1 | grep -q "Signature=adhoc"
+          echo "--- install name ---"
+          [ "$(otool -D "$P/lib/libredwoodmetal.dylib" | sed -n 2p)" = /redwood/lib/libredwoodmetal.dylib ]
+          echo "--- cpusubtype (arm64e + LIB64 = 0x80000002) ---"
+          python3 - "$P/lib/libredwoodmetal.dylib" <<'PY'
+          import struct, sys
+          with open(sys.argv[1], "rb") as f:
+              magic, _, subtype = struct.unpack("<Iii", f.read(12))
+          assert magic in (0xFEEDFACF, 0xFEEDFACE), "not a thin Mach-O"
+          assert subtype & 0xFFFFFFFF == 0x80000002, f"cpusubtype {subtype & 0xFFFFFFFF:#x}"
+          print("cpusubtype 0x80000002 ok")
+          PY
+          echo "--- staged hash == manifest hash ---"
+          python3 - "$P" <<'PY'
+          import hashlib, json, sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          m = json.loads((p / "manifest.json").read_text())
+          assert m["mode"] == "driver-only", m["mode"]
+          got = hashlib.sha256((p / "lib/libredwoodmetal.dylib").read_bytes()).hexdigest()
+          assert got == m["driver_sha256"], f"{got[:16]} != {m['driver_sha256'][:16]}"
+          print("driver_sha256 matches manifest")
+          PY
+          echo "--- bundle is not the dylib ---"
+          [ "$(shasum -a 256 "$P/lib/libredwoodmetal.dylib" | cut -d' ' -f1)" != \
+            "$(shasum -a 256 "$P/lib/RedwoodMetal.bundle/RedwoodMetal" | cut -d' ' -f1)" ]
+          ls -lR "$P"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redwood-driver-package
+          path: out/ios26-resume/bbmetal-device/package/
+          if-no-files-found: error
