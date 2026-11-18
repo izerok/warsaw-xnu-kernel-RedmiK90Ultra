@@ -1,9 +1,20 @@
 name: build mesa air
 
-# libannibaleair.dylib -- the Mesa AIR frontend that the Metal driver dlopens to
-# turn a Metal shader into Adreno ir3 machine code. (Upstream renamed it from
-# libredwoodair.dylib, install name /redwood/lib/... -> /annibale/lib/...;
-# see the 2026-11-09 drift note further down.)
+# libredwoodair.dylib -- the Mesa AIR frontend that the Metal driver dlopens to
+# turn a Metal shader into Adreno ir3 machine code. Upstream renamed it from
+# libredwoodair.dylib, install name /redwood/lib/... -> /annibale/lib/... (see
+# the 2026-11-09 drift note further down); this fork renames the published file
+# back to libredwoodair.dylib with install name /redwood/lib/libredwoodair.dylib
+# (2026-11-19, tranche 13, item 5: the driver dlopens that absolute path, and
+# build.sh's V=26 default expects that name). The meson target stays
+# 'annibaleair' -- air-metal.patch defines it -- so the build directory still
+# holds libannibaleair.dylib; the rename happens at the naming step below.
+#
+# The workflow also writes air-build-record.json (same shape as
+# tools/k90auto/build-air.py's record: library hash, source/tree hashes for the
+# FILES list, patches hash, holds{}), which tools/k90auto/package.py checks
+# before packing. Keep the FILES list in the record step in sync with
+# build-air.py's FILES.
 #
 # Without it the device still finds the GPU (metal_caps reads vendorName Apple,
 # maxWorkingSetSize 536870912, hasUnifiedMemory yes) and can still create a
@@ -264,18 +275,18 @@ jobs:
           ls -l "/tmp/mesa/build/$TARGET"
 
       - name: Name and sign the library the way the device needs
-        # air-metal.patch now bakes the install name in at link time; the Metal
-        # driver dlopens the absolute path and libannibaleair.dylib is linked
-        # against by install name, so the id has to be
-        # /annibale/lib/libannibaleair.dylib. The install_name_tool call below
-        # re-asserts that id before signing (rewriting a Mach-O after signing
+        # air-metal.patch bakes the install name in at link time as
+        # /annibale/lib/libannibaleair.dylib; the Metal driver dlopens the
+        # absolute path /redwood/lib/libredwoodair.dylib and build.sh's V=26
+        # default expects that name, so the published file is renamed and its
+        # id re-asserted here before signing (rewriting a Mach-O after signing
         # would invalidate the signature).
         run: |
           set -euo pipefail
           B=/tmp/mesa/build/src/gallium/drivers/freedreno/libannibaleair.dylib
-          O=/tmp/mesa/out/libannibaleair.dylib
+          O=/tmp/mesa/out/libredwoodair.dylib
           cp "$B" "$O"
-          install_name_tool -id /annibale/lib/libannibaleair.dylib "$O"
+          install_name_tool -id /redwood/lib/libredwoodair.dylib "$O"
           /usr/bin/codesign --force --sign - "$O"
           echo "--- install name ---"
           otool -D "$O"
@@ -285,16 +296,71 @@ jobs:
           nm -gU "$O" | awk '{ print $NF }' | LC_ALL=C sort > /tmp/mesa/out/exports-rwa.txt
           RWA=$(grep -c '^_rwa_' /tmp/mesa/out/exports-rwa.txt || true)
           echo "$RWA rwa_* functions"
-          [ "${RWA:-0}" -gt 0 ] || { echo "::error::libannibaleair.dylib exports no rwa_* at all"; exit 1; }
-          [ "$(otool -D "$O" | sed -n 2p)" = /annibale/lib/libannibaleair.dylib ] || \
+          [ "${RWA:-0}" -gt 0 ] || { echo "::error::libredwoodair.dylib exports no rwa_* at all"; exit 1; }
+          [ "$(otool -D "$O" | sed -n 2p)" = /redwood/lib/libredwoodair.dylib ] || \
             { echo "::error::wrong install name"; exit 1; }
           /usr/bin/codesign -dv "$O" 2>&1 | head -5
-          shasum -a 256 "$O" | tee /tmp/mesa/out/libannibaleair.sha256
+          shasum -a 256 "$O" | tee /tmp/mesa/out/libredwoodair.sha256
           ls -l /tmp/mesa/out
+
+      - name: Write air-build-record.json
+        # The record tools/k90auto/package.py checks before packing (see
+        # check_air_lib): library hash, source/tree hashes for the same FILES
+        # list build-air.py uses, the patches hash, and the holds{} presence
+        # table for the format strings the instrumentation prints. The tree
+        # hashes are read from the tree the compiler actually read
+        # (mesa-$MESA_VERSION/src/compiler/air), the source hashes from
+        # /tmp/u/tools/mesa/air. Keep FILES in sync with build-air.py.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          FILES = ["air_metal.c", "air_metal.h", "air_clear_plan.h", "air_metal_clear.inc", "air_to_nir.c", "air_instruction.inc", "air_entry.inc", "air_private.h", "air_metal_copy.inc", "air_metal_copy.h",
+                   "air_metal_compute.inc", "air_intrinsics.c", "air_math_private.h", "air_metal_lowering.inc",
+                   "air_metal_resource_private.h", "air_link.inc", "air_stitch.inc", "air_stitch_test.c",
+                   "air_stitch_test.metal", "air_stitch_link_test.c", "nir_air.h", "air_call.inc",
+                   "air_metal_texture.inc", "air_metal_texels.inc", "air_metal_fence.inc", "air_metal_state.inc",
+                   "air_metal_dispatch.inc", "air_texture.inc", "air_llvm.inc", "air_argbuf.inc",
+                   "air_metal_depth_stencil.inc", "air_ptr_slot.inc", "air_ptr_phi.inc", "air_debug.inc",
+                   "air_metal_vertex_cache.inc", "air_metal_yuv.h", "air_metal_yuv.inc",
+                   "air_metal_formats.inc", "air_metal_allocation.inc", "air_yuv_test.c", "air_gep.inc",
+                   "air_metal_rgb2p.h", "air_metal_rgb2p.inc", "air_metal_rgb2p_private.h", "air_metal_bicubic.inc",
+                   "air_reflection.c", "air_reflection.h", "air_metal_reflection.h",
+                   "air_simd.inc", "air_imageblock.inc", "air_metal_blend.inc",
+                   "air_reflection_test.c", "air_copy_test.c", "meson.build"]
+          SRC = Path("/tmp/u/tools/mesa/air")
+          TREE = Path(f"/tmp/mesa/mesa-{os.environ['MESA_VERSION']}/src/compiler/air")
+          OUT = Path("/tmp/mesa/out/libredwoodair.dylib")
+          RECORD = Path("/tmp/mesa/out/air-build-record.json")
+          def digest(p):
+              return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          patches = sorted(Path("/tmp/u/tools/mesa").glob("*.patch")) + sorted(Path("/tmp/u/tools/mesa/rebase-26").glob("*.patch"))
+          record = {"patches_sha256": hashlib.sha256(b"".join(p.read_bytes() for p in patches)).hexdigest()}
+          for name in FILES:
+              src, tree = SRC / name, TREE / name
+              assert src.is_file(), f"{src} is missing"
+              assert tree.is_file(), f"{tree} is missing from the build tree"
+              record[f"source_sha256:{name}"] = digest(src)
+              record[f"tree_sha256:{name}"] = digest(tree)
+          text = subprocess.run(["/usr/bin/strings", str(OUT)], capture_output=True, text=True).stdout
+          record.update({
+              "library": "out/ios26-resume/bbmetal-device/libredwoodair.dylib",
+              "library_bytes": OUT.stat().st_size,
+              "library_sha256": digest(OUT),
+              "signed": "adhoc",
+              "holds": {name: name in text for name in (
+                  "resolve %llu", "batch cuts", "verts %llu", "calls %llu in", "clock pair adds",
+                  "perf flush totals", "phase marks off", "perf draw: timing on", "rwa draw:",
+                  "rwa shadow:", "ir3 cache[", "tl: x", "tl: y", "tl: z", "tl: z2", "tl: z3", "tl: z4", "tl: z5", "tl: z6", "tl: z7", "tl: z8", "tl: z9", "tl: za", "tl: zb", "tl: zc")},
+          })
+          RECORD.write_text(json.dumps(record, indent=2) + "\n")
+          print(f"air-build-record.json: library {record['library_bytes']} bytes, sha256 {record['library_sha256'][:16]}")
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libannibaleair-arm64e
+          name: libredwoodair-arm64e
           path: /tmp/mesa/out/
           if-no-files-found: error
 
@@ -311,7 +377,7 @@ jobs:
           git config user.email actions@github.com
           git checkout -q -b air-artifacts
           git add -A
-          git commit -qm "libannibaleair: mesa $MESA_VERSION, $(shasum -a 256 libannibaleair.dylib | cut -d' ' -f1)"
+          git commit -qm "libredwoodair: mesa $MESA_VERSION, $(shasum -a 256 libredwoodair.dylib | cut -d' ' -f1)"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -q -f origin air-artifacts
           echo "air-artifacts: $(git rev-parse --short HEAD)"
