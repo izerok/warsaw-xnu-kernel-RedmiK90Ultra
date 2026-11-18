@@ -4,10 +4,20 @@
 Packages kernel, root26.apfs, and --rdfile darwin:5917904896:0 into an XNUP container,
 then compresses the payload with LZ4 to produce ~26 MB standalone boot payload fitting
 within the 96 MiB boot_a partition.
+
+Root-disk gate (tranche 13, item 7): the packed root disk must be the one
+tools/k90auto/package.py made, carrying the tools/userland-driver build.
+find_default_ramdisk() still lists the old candidates, but main() refuses to
+pack any of them except the package.py output, and verifies it against the
+pack manifest (root hash + driver hash). If package.py has not run, the run
+fails loudly here instead of silently packing userland/root26.apfs -- that
+image carries the userland/src (16.5 line) driver, and booting it would run
+the wrong driver with no warning at all.
 """
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -74,6 +84,70 @@ def find_default_ramdisk(root_dir: Path) -> Path:
         if c.is_file():
             return c
     return candidates[0]
+
+
+def assert_root_disk_driver(ramdisk: Path, root_dir: Path) -> None:
+    """Loud-fail unless the ramdisk is the package.py output carrying the tools/ driver.
+
+    The check is three links, each of which fails with the fix attached:
+      1. out/ios26-resume/bbmetal-device/root.apfs exists -- i.e. package.py ran.
+         If it does not, there is no verified iOS 26 root disk at all, and the
+         old silent fallback to userland/root26.apfs is refused: that image
+         carries the userland/src (16.5 line) driver.
+      2. The ramdisk IS that file. Anything else (an explicit -r at
+         userland/root26.apfs, a k90-ready staging, a stale copy) is refused:
+         its driver is unverified, and the 16.5-line one is the known wrong
+         answer for an iOS 26 boot.
+      3. The pack manifest binds the image to the tools/ driver: the image
+         hash equals manifest root_sha256, and the manifest driver_sha256
+         equals the staged tools-built driver (out/.../libredwoodmetal.dylib).
+         package.py asserts the same binding at pack time when it copies the
+         driver into the image; this re-checks it at pack-the-payload time, so
+         a replaced image or driver cannot slip through.
+    Deliberately no escape hatch: a payload that boots the wrong driver fails
+    silently on the device, 400 seconds into a run, looking like a registration
+    problem. Failing here is the whole point.
+    """
+    packaged = root_dir / "out/ios26-resume/bbmetal-device/root.apfs"
+    tools_driver = root_dir / "out/ios26-resume/bbmetal-device/libredwoodmetal.dylib"
+    if not packaged.is_file():
+        raise SystemExit(
+            "mkstandalone: package.py has not run -- "
+            "out/ios26-resume/bbmetal-device/root.apfs does not exist, so there is no "
+            "verified iOS 26 root disk to pack. Refusing to fall back to "
+            "userland/root26.apfs: that image carries the userland/src (16.5 line) "
+            "driver, not the tools/userland-driver build. "
+            "Run: python3 tools/k90auto/package.py")
+    if ramdisk.resolve() != packaged.resolve():
+        raise SystemExit(
+            f"mkstandalone: refusing to pack {ramdisk}: it is not the package.py output "
+            f"({packaged}). Only the package.py output is verified to carry the "
+            "tools/userland-driver build; anything else (e.g. userland/root26.apfs) "
+            "carries the 16.5-line driver. Run: python3 tools/k90auto/package.py")
+    manifest_path = packaged.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise SystemExit(
+            f"mkstandalone: {manifest_path} is missing: the package.py output has no "
+            "pack manifest, so the image cannot be tied to the tools/ driver. "
+            "Re-run: python3 tools/k90auto/package.py")
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("root_sha256") != sha256_file(packaged):
+        raise SystemExit(
+            "mkstandalone: the root image is not the one its manifest describes "
+            f"(manifest root_sha256 {str(manifest.get('root_sha256'))[:16]}, image hashes "
+            f"to {sha256_file(packaged)[:16]}): stale or replaced since packing. "
+            "Re-run: python3 tools/k90auto/package.py")
+    if not tools_driver.is_file():
+        raise SystemExit(
+            f"mkstandalone: the staged tools-built driver {tools_driver} is missing, so "
+            "the manifest driver hash has nothing to check against. "
+            "Re-run: python3 tools/k90auto/package.py")
+    if manifest.get("driver_sha256") != sha256_file(tools_driver):
+        raise SystemExit(
+            "mkstandalone: the manifest driver hash does not match the staged "
+            "tools-built driver: the driver was replaced after packing, or the image "
+            "was packed from a different driver. "
+            "Re-run: python3 tools/k90auto/package.py")
 
 
 def sha256_file(path: Path) -> str:
@@ -204,6 +278,11 @@ def main() -> int:
             assert out_lz.is_file() and out_lz.stat().st_size > 0
             print("mkstandalone self-test: PASS")
             return 0
+
+    # Root-disk gate (item 7): refuse to pack anything but the verified
+    # package.py output. The --test branch above returns before this point,
+    # so the self-test (dummy bytes, no APFS image) is unaffected.
+    assert_root_disk_driver(args.ramdisk, kernel_root)
 
     out_bin, out_lz = build_standalone_payload(
         kernel=args.kernel,
