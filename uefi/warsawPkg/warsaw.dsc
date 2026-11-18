@@ -60,7 +60,7 @@
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel|"REDMI K90 Ultra" # [S2] market name: lrqtech system.prop comment ("市场名 REDMI K90 Ultra") + LKML sm8750-xiaomi-warsaw.dts model = "REDMI K90 Ultra"; dodge parallel: SystemModel = marketing model ("13")
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailModel|"warsaw" # [S1] device codename
   gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemRetailSku|"2604FRK1EC" # [S2] retail model number: GSMArena "Models 2604FRK1EC" + 3C certification + mifirmware table (REDMI K90 Ultra | warsaw | 2604FRK1EC); dodge parallel: RetailSku = retail model no. ("CPH2653"); caveat: same number also listed for prague (K90 Max)
-  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemBoardModel|"12" # [S1] xiaomi,miboard-id = <0xC 0> (12) in MiCode vendor_qcom_opensource_display-devicetree@warsaw-w-oss, display/warsaw/warsaw-sde-display-mtp-overlay.dts:12; cross-check: qcom,board-id <0x40008 0> in the same file matches warsaw.dtb, and annibale DTBO binary reads 11 = 0xB matching its overlay source
+  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemBoardModel|"Qualcomm Technologies, Inc. Warsaw based on SM8750" # [S1] DT root `model` in MiCode kernel_devicetree@warsaw-w-oss (HEAD 87154a67), qcom/warsaw-sm8750.dtsi:12 + qcom/warsaw-sm8750-overlay.dts:7 (identical); cross-check: qcom,board-id <0x40008 0> in the same file matches warsaw.dtb; live-device root model verified 2026-11-18 (adb shell su, /sys/firmware/fdt) — identical. Replaces "12" (xiaomi,miboard-id is a kernel board ID, not the board model; base dtsi has 0xB, overlay 0xC).
 
   #
   # Simple Frame Buffer
