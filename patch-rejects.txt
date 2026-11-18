@@ -1,0 +1,9 @@
+mesa-26.2.5/src/freedreno/drm/freedreno_bo.c.rej
+mesa-26.2.5/src/freedreno/drm/meson.build.rej
+mesa-26.2.5/src/freedreno/ir3/ir3_nir_lower_io_offsets.c.rej
+mesa-26.2.5/src/gallium/auxiliary/util/perf_draw.h.rej
+mesa-26.2.5/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc.rej
+mesa-26.2.5/src/gallium/drivers/freedreno/freedreno_batch.c.rej
+mesa-26.2.5/src/gallium/drivers/freedreno/freedreno_draw.c.rej
+mesa-26.2.5/src/gallium/drivers/freedreno/freedreno_screen.c.rej
+mesa-26.2.5/src/gallium/drivers/freedreno/meson.build.rej
