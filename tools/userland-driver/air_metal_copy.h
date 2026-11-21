@@ -11,6 +11,8 @@ struct rwa_device;
 struct rwa_buffer;
 struct rwa_texture;
 struct rwa_texture_shape;
+struct rwa_compute;
+struct rwa_compute_info;
 
 /* Memory a shader can read and write, and the processor can too. The mapping is write
  * combined, as the kernel makes it, so a driver has nothing to flush.
@@ -66,6 +68,10 @@ void rwa_buffer_set_mirror(struct rwa_buffer *buffer, void *mirror);
 struct rwa_buffer *rwa_buffer_from_memory(struct rwa_device *device, void *bytes, size_t size,
 					  char *why, size_t why_size);
 
+/* A buffer backed directly by a shareable IOSurface (kRedwoodSurface / drmPrimeFDToHandle). */
+struct rwa_buffer *rwa_buffer_from_surface(struct rwa_device *device, int surface_id, size_t size,
+					   char *why, size_t why_size);
+
 /* A function linked into the fragment stage (MTLLinkedFunctions), node by node: the same
  * layout as air_metal.h's, see rwa_render_create_linked there. */
 struct rwa_stitch_node {
@@ -90,6 +96,18 @@ struct rwa_texture *rwa_texture_view(struct rwa_texture *texture, unsigned mtl_f
                                      unsigned first_level, unsigned num_levels,
                                      char *why, size_t why_size);
 void rwa_texture_set_swizzle(struct rwa_texture *texture, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+
+/* A compute pipeline built without compiling yet (rwa_compute_create_deferred), and the call
+ * that fills in the limits a deferred pipeline left blank (rwa_compute_materialize). Both
+ * are dlsym'd by the driver and NULL-checked: the library at the current pin has neither,
+ * so the driver falls back to rwa_compute_create and to the limits the create filled in.
+ * The declarations live here so the mesa struct can name their types. */
+__attribute__((visibility("default")))
+struct rwa_compute *rwa_compute_create_deferred(struct rwa_device *device, const void *bitcode,
+   size_t size, const char *entry, struct rwa_compute_info *info, char *why, size_t why_size);
+__attribute__((visibility("default")))
+int rwa_compute_materialize(struct rwa_compute *compute, struct rwa_compute_info *info,
+   char *why, size_t why_size);
 
 #ifdef __cplusplus
 }

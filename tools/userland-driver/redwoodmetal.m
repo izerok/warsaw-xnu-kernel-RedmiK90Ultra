@@ -91,6 +91,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>          /* for MTLSize and the public enumerations, nothing private */
+#import <IOSurface/IOSurfaceRef.h> /* the IOSurfaceRef type only; the symbols are dlsym'd, not linked */
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <IOKit/IOKitLib.h>
@@ -1014,6 +1015,7 @@ struct gem_close { uint32_t handle, pad; };
 	RedwoodMetalDevice *_owner;
 	struct rwa_compute *_compute;
 	struct rwa_compute_info _info;
+	uint32_t _limitsMaterialized;
 }
 @end
 
@@ -1166,6 +1168,7 @@ struct gem_close { uint32_t handle, pad; };
 	int _responsibleProcess;  /* what <MTLResourceSPI> calls the owner, for accounting */
 	void (^_callerDeallocator)(void *, NSUInteger); /* copied: CoreAnimation's is on its stack */
 	void *_callerBytes;       /* what that block expects back, not what we allocated */
+	CFTypeRef _iosurface;     /* retained when backed by an IOSurface (-newBufferWithIOSurface:) */
 }
 @property (readonly) struct rwa_buffer *mesaBuffer;
 - (instancetype)initWithDevice:(RedwoodMetalDevice *)device
@@ -1176,6 +1179,8 @@ struct gem_close { uint32_t handle, pad; };
 			 bytes:(const void *)bytes
 			length:(NSUInteger)length
 		   deallocator:(void (^)(void *, NSUInteger))deallocator;
+- (instancetype)initWithDevice:(RedwoodMetalDevice *)device
+		     iosurface:(void *)surface;
 @end
 
 #include "redwoodmetal_stitch.inc"
@@ -2201,15 +2206,25 @@ struct gem_close { uint32_t handle, pad; };
 
 	char why[512] = { 0 };
 	struct rwa_compute_info info = { 0 };
-	struct rwa_compute *compute = mesa.compute_create(_mesa, [air bytes], [air length],
-							  [[function name] UTF8String], &info,
-							  why, sizeof(why));
+	/* A deferred create when the library has one, else the ordinary create: the library
+	 * at the current pin has no rwa_compute_create_deferred, so this is the ordinary
+	 * create until the pin lift brings the deferred one (upstream 0f213ae). */
+	struct rwa_compute *(*create_fn)(struct rwa_device *, const void *, size_t,
+	    const char *, struct rwa_compute_info *, char *, size_t) =
+	    mesa.compute_create_deferred != NULL ? mesa.compute_create_deferred :
+	    mesa.compute_create;
+	struct rwa_compute *compute = create_fn(_mesa, [air bytes], [air length],
+						  [[function name] UTF8String], &info,
+						  why, sizeof(why));
 	if (compute == NULL) {
 		/* The front end's own sentence, passed through rather than replaced: it says
 		 * which construct it refused, and an application can act on that. */
 		return [self fail:error with:[NSString stringWithUTF8String:why]];
 	}
-	rw_print("compute pipeline %p is %s\n", (void *)compute, [[function name] UTF8String]);
+	static unsigned compute_created_logged;
+	if (__atomic_fetch_add(&compute_created_logged, 1, __ATOMIC_RELAXED) < 64) {
+		rw_print("compute pipeline %p is %s\n", (void *)compute, [[function name] UTF8String]);
+	}
 	return [[RedwoodMetalComputePipeline alloc] initWithRedwoodDevice:self
 								 compute:compute
 								    info:&info
@@ -2350,7 +2365,13 @@ struct gem_close { uint32_t handle, pad; };
  * CoreAnimation does not test what it gets back, so a bare nil becomes a CAMetalDrawable
  * whose -texture is nil, and the application finds out later and somewhere else.
  */
-- (id)newBufferWithIOSurface:(void *)surface        { (void)surface; return nil; }
+- (id)newBufferWithIOSurface:(void *)surface
+{
+	if (surface == NULL) {
+		return nil;
+	}
+	return [[RedwoodMetalBuffer alloc] initWithDevice:self iosurface:surface];
+}
 - (id)newBufferWithBytesNoCopy:(void *)bytes
 			length:(NSUInteger)length
 		       options:(NSUInteger)options
@@ -2568,6 +2589,69 @@ struct gem_close { uint32_t handle, pad; };
 	return self;
 }
 
+/* A buffer backed by a shareable IOSurface (-newBufferWithIOSurface:): the library takes
+ * the surface's memory directly when it can (rwa_buffer_from_surface), and falls back to
+ * the surface's base address as ordinary memory when it cannot. The surface is retained
+ * for as long as the buffer lives, and released in -dealloc. The two IOSurface symbols
+ * are looked up rather than linked, like IOSurfaceGetID in redwooddrawable.m; the
+ * rwa_buffer_from_surface dlsym is NULL-checked because the library at the current pin
+ * has no such entry yet. */
+- (instancetype)initWithDevice:(RedwoodMetalDevice *)device
+		     iosurface:(void *)surface
+{
+	static size_t (*get_alloc_size)(void *);
+	static void *(*get_base_address)(void *);
+	static int looked;
+	char why[256] = { 0 };
+	struct rwa_buffer *own = NULL;
+	size_t alloc_size;
+	void *base;
+	uint32_t surface_id;
+
+	self = [super init];
+	if (self == nil) {
+		return nil;
+	}
+	if (!looked) {
+		*(void **)&get_alloc_size = dlsym(RTLD_DEFAULT, "IOSurfaceGetAllocSize");
+		*(void **)&get_base_address = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddress");
+		looked = 1;
+	}
+	if (surface == NULL || get_alloc_size == NULL || !mesa_available() ||
+	    [device mesaDevice] == NULL) {
+		[self release];
+		return nil;
+	}
+	alloc_size = get_alloc_size(surface);
+	if (alloc_size == 0 || alloc_size > UINT32_MAX) {
+		[self release];
+		return nil;
+	}
+	base = get_base_address != NULL ? get_base_address(surface) : NULL;
+	surface_id = rwd_surface_id(surface);
+	if (surface_id != 0 && mesa.buffer_from_surface != NULL) {
+		own = mesa.buffer_from_surface([device mesaDevice], (int)surface_id, alloc_size,
+					       why, sizeof(why));
+	}
+	if (own == NULL && base != NULL && mesa.buffer_from_memory != NULL) {
+		NSUInteger page_size = (alloc_size + 4095) & ~(NSUInteger)4095;
+		own = mesa.buffer_from_memory([device mesaDevice], base, page_size,
+					      why, sizeof(why));
+	}
+	if (own == NULL) {
+		rw_print("newBufferWithIOSurface %p (%zu bytes, id %u): %s\n", surface, alloc_size,
+			 surface_id, why[0] ? why : "surface import unavailable");
+		[self release];
+		return nil;
+	}
+	_mesa = own;
+	_owner = device;
+	_length = alloc_size;
+	_contents = base != NULL ? base : mesa.buffer_map(own);
+	_iosurface = CFRetain(surface);
+	return self;
+}
+
 - (struct rwa_buffer *)mesaBuffer
 {
 	return _mesa;
@@ -2634,6 +2718,10 @@ struct gem_close { uint32_t handle, pad; };
 			rw_print("rwa dealloc: destroyed %llu mesa %p\n",
 				 (unsigned long long)dealloc_n, _mesa);
 		}
+		if (_iosurface != NULL) {
+			CFRelease(_iosurface);
+			_iosurface = NULL;
+		}
 		[super dealloc];
 		return;
 	}
@@ -2648,6 +2736,10 @@ struct gem_close { uint32_t handle, pad; };
 		IOConnectCallStructMethod(_gpu, kDrmGemClose, &request, sizeof(request), &request,
 					  &size);
 	}
+	if (_iosurface != NULL) {
+		CFRelease(_iosurface);
+		_iosurface = NULL;
+	}
 	[super dealloc];
 }
 
@@ -2656,6 +2748,7 @@ struct gem_close { uint32_t handle, pad; };
 - (id)device                { return _owner; }
 - (uint64_t)gpuAddress      { return _iova; }
 - (NSUInteger)allocatedSize { return _length; }
+- (IOSurfaceRef)iosurface   { return (IOSurfaceRef)_iosurface; }
 
 /* The memory is write-combined and the GPU reads it through no cache of ours, so there is
  * nothing to push out; saying so is not the same as doing nothing by accident. */
@@ -2771,10 +2864,37 @@ struct gem_close { uint32_t handle, pad; };
 - (struct rwa_compute *)compute { return _compute; }
 - (BOOL)groupFree { return _info.group_free != 0; }
 
+- (void)ensureLimitsMaterialized
+{
+	if (__atomic_load_n(&_limitsMaterialized, __ATOMIC_ACQUIRE) != 0)
+		return;
+	if (_compute == NULL || mesa.compute_materialize == NULL)
+		return;
+	char why[512] = { 0 };
+	struct rwa_compute_info mat = { 0 };
+	if (mesa.compute_materialize(_compute, &mat, why, sizeof(why)) != 0) {
+		static unsigned materialize_logged;
+		if (__atomic_fetch_add(&materialize_logged, 1, __ATOMIC_RELAXED) < 16)
+			rw_print("compute materialize refused: %s\n", why);
+		return;
+	}
+	__atomic_store_n(&_info.max_threads_per_group, mat.max_threads_per_group, __ATOMIC_RELAXED);
+	__atomic_store_n(&_info.thread_execution_width, mat.thread_execution_width, __ATOMIC_RELAXED);
+	__atomic_store_n(&_limitsMaterialized, 1u, __ATOMIC_RELEASE);
+}
+
 /* The three the base class answers with nothing at all (docs/metal.md 10.8), so they can
  * only come from whoever compiled the shader -- which is why the contract carries them. */
-- (NSUInteger)maxTotalThreadsPerThreadgroup { return _info.max_threads_per_group; }
-- (NSUInteger)threadExecutionWidth          { return _info.thread_execution_width; }
+- (NSUInteger)maxTotalThreadsPerThreadgroup
+{
+	[self ensureLimitsMaterialized];
+	return __atomic_load_n(&_info.max_threads_per_group, __ATOMIC_ACQUIRE);
+}
+- (NSUInteger)threadExecutionWidth
+{
+	[self ensureLimitsMaterialized];
+	return __atomic_load_n(&_info.thread_execution_width, __ATOMIC_ACQUIRE);
+}
 - (NSUInteger)staticThreadgroupMemoryLength { return _info.static_shared_bytes; }
 
 - (id)device { return _owner; }
