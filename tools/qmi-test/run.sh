@@ -14,7 +14,7 @@ ATH=${ATH11K:-$ROOT/xnu-deps/build/ath11k/src/ath11k}
 B=$ROOT/xnu-deps/build/qmi-test
 rm -rf "$B"
 mkdir -p "$B/inc/sys"
-ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$K/bsd/sys/redwood_nas.h" "$B/inc/sys/"
+ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$K/bsd/sys/redwood_nas.h" "$K/bsd/sys/redwood_wds.h" "$B/inc/sys/"
 FLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -pthread"
 if [ -f "$ATH/qmi.c" ]; then
 	"$HERE/extract.py" "$ATH" > "$B/tables.inc"
@@ -28,3 +28,6 @@ fi
 # The NAS test needs no ath11k tables; it does need the shim for <sys/systm.h> (printf, strings).
 ${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-nas" "$HERE/test_nas.c" "$K/bsd/dev/redwood_nas.c"
 "$B/test-nas"
+# Same for the WDS session test (its fake transport drives DPM/WDA/WDS by hand).
+${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-wds" "$HERE/test_wds.c" "$K/bsd/dev/redwood_wds.c"
+"$B/test-wds"
