@@ -1,0 +1,165 @@
+sha:  ffbc41379297cfa7019ed8ee675bbc98e14ef5e4
+run:  44899889450  attempt 1
+time: Sat Nov 21 11:45:08 UTC 2026
+job:  kernel  runner arm64
+
+===== ath12k.log:        2 行 =====
+--- 命中错误关键字的行（末 60 条）---
+--- 尾部 100 行 ---
+clang: warning: using sysroot for 'MacOSX' but targeting 'iPhone' [-Wincompatible-sysroot]
+mk-ath12k.sh: out/ath12k.o: 580429 bytes of code and data from       33 of the driver's files;        1 functions of the others are stubs (out/stubs.txt); asks the kernel for 46 names
+
+===== kernel1.log:  3836933 行 =====
+--- 命中错误关键字的行（末 60 条）---
+40926: 5176 |                         assert(ret != kIOReturnSuccess || *assertionID != kIOPMUndefinedDriverAssertionID);
+857544:  182 |                 os_atomic_inc(&lm->lm_cnt_failed_lmoff, relaxed);
+857570:  187 |                 os_atomic_inc(&lm->lm_cnt_failed_size, relaxed);
+857597:  197 |                 os_atomic_inc(&lm->lm_cnt_failed_full, relaxed);
+869554:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/libkern/os/log_queue.c:148:1: warning: identifier '__log_queue_cnt_mem_failed_early_storage' is reserved because it starts with '__' [-Wreserved-identifier]
+869555:  148 | SCALABLE_COUNTER_DEFINE(log_queue_cnt_mem_failed);
+869561:   42 | __log_queue_cnt_mem_failed_early_storage
+1003560:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/bsd/dev/redwood_bt_private.h      :| 22:                                    ^1: error: version control conflict marker in file
+1003967:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/bsd/dev/redwood_bt_uart.c:482:48: error: use of undeclared identifier 'redwood_bt_uart_isr'; did you mean 'redwood_bt_uart_open'?
+1004029:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/bsd/dev/redwood_bt_uart.c:548:5: error: call to undeclared function 'redwood_bt_uart_status'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+1004036:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/bsd/dev/redwood_bt_uart.c:581:2: error: call to undeclared function 'redwood_bt_uart_status'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+1004049:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/bsd/dev/redwood_bt_uart.c:587:1: error: conflicting types for 'redwood_bt_uart_status'
+2777318:  410 |                 assertf(kr == KERN_SUCCESS, "pmap_enter() failed with 0x%x", kr);
+2933473:  865 |         int __failed_expr(ex) && __builtin_expect(!(ex), 0L)) {      \
+2944861: 5337 |                 os_atomic_inc(&c_segment_svp_hash_failed, relaxed);
+3053047:  626 | #define LCK_R/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/vm/vm_kern.c:178:W1_:A Swarning: identifier '__kmem_failed_panic' is reserved because it starts with '__' [-Wreserved-identifier]
+3053048:S  178 | __kmem_failed_paniEcR(T
+3090762: 4959 |                                         DEBUG4K_SHARE("failed kr 0x%x\n", kr);
+3097185:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/vm/vm_map.c:8052:1: warning: identifier '__vm_map_delete_failed_panic' is reserved because it starts with '__' [-Wreserved-identifier]
+3097186: 8052 | __vm_map_delete_failed_panic(vm_map_lock_ctx_t ctx, kern_return_t kr)
+3102208: 10872 |                         DEBUG4K_COPY("adjust failed 0x%x\n", kr);
+3126541: 17140 |                         DEBUG4K_COPY("failed to adjust 0x%x\n", result);
+3296183:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/vm/vm_resident.c:8670:1: warning: identifier '__vm_page_alloc_list_failed_panic' is reserved because it starts with '__' [-Wreserved-identifier]
+3296184: 8670 | __vm_page_alloc_list_failed_panic(
+3680990:  203 | struct _iopol_par/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/console/serial_console.c:520:11: warning: parameter 'str' not found in the function declaration [-Wdocumentation]
+3680997:/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/console/serial_console.c:521:11: warning: parameter 'size' not found in the function declaration [-Wdocumentation]
+--- 尾部 100 行 ---
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private.h:517:37: note: expanded from macro 'os_atomic_or_orig'
+  517 | #define os_atomic_or_orig(p, v, m)  _os_atomic_c11_op_orig(p, v, m, fetch_or)
+      |                                     ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private_impl.h:224:6: note: expanded from macro '_os_atomic_c11_op_orig'
+  224 |             _os_atomic_value_cast(p, v), \
+      |             ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private_impl.h:218:50: note: expanded from macro '_os_atomic_value_cast'
+  218 |         ({ __typeof__(*os_cast_to_nonatomic_pointer(p)) ___v = (v); ___v; })
+      |                                                         ^
+In file included from /Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:39:
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/thread.h:428:34: warning: identifier '__runq' is reserved because it starts with '__' [-Wreserved-identifier]
+  428 |         struct { processor_t    runq; } __runq; /* internally managed run queue assignment, see above comment */
+      |                                         ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/thread.h:1503:9: warning: identifier '___v' is reserved because it starts with '__' [-Wreserved-identifier]
+ 1503 |         return os_atomic_or_orig(&thread->thread_tag, tag, relaxed);
+      |                ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private.h:517:37: note: expanded from macro 'os_atomic_or_orig'
+  517 | #define os_atomic_or_orig(p, v, m)  _os_atomic_c11_op_orig(p, v, m, fetch_or)
+      |                                     ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private_impl.h:224:6: note: expanded from macro '_os_atomic_c11_op_orig'
+  224 |             _os_atomic_value_cast(p, v), \
+      |             ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/EXPORT_HDRS/libkern/os/atomic_private_impl.h:218:50: note: expanded from macro '_os_atomic_value_cast'
+  218 |         ({ __typeof__(*os_cast_to_nonatomic_pointer(p)) ___v = (v); ___v; })
+      |                                                         ^
+In file included from /Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:39:
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/thread.h:1589:8: warning: identifier '_thread_ledger_indices' is reserved because it starts with '_' at global scope [-Wreserved-identifier]
+ 1589 | struct _thread_ledger_indices {
+      |        ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:74:2: warning: identifier '__l' is reserved because it starts with '__' [-Wreserved-identifier]
+   74 |         assert( self == current_thread()->machine.cthread_self);
+      |         ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:197:3: note: expanded from macro 'assert'
+  197 |         (mach_assert_enabled_expr(ex) && !(ex) \
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:194:3: note: expanded from macro 'mach_assert_enabled_expr'
+  194 |         (mach_assert_enabled() || __builtin_constant_p(!(ex)))
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:134:37: note: expanded from macro 'mach_assert_enabled'
+  134 | #   define mach_assert_enabled()    improbable_static_if(mach_assert)
+      |                                     ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/machine/static_if.h:149:12: note: expanded from macro 'improbable_static_if'
+  149 |         __label__ __l;                                          \
+      |                   ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:74:2: warning: identifier '__result' is reserved because it starts with '__' [-Wreserved-identifier]
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:197:3: note: expanded from macro 'assert'
+  197 |         (mach_assert_enabled_expr(ex) && !(ex) \
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:194:3: note: expanded from macro 'mach_assert_enabled_expr'
+  194 |         (mach_assert_enabled() || __builtin_constant_p(!(ex)))
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:134:37: note: expanded from macro 'mach_assert_enabled'
+  134 | #   define mach_assert_enabled()    improbable_static_if(mach_assert)
+      |                                     ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/machine/static_if.h:150:6: note: expanded from macro 'improbable_static_if'
+  150 |         int __result = 1;                                       \
+      |             ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:74:2: warning: identifier '__l' is reserved because it starts with '__' [-Wreserved-identifier]
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:197:3: note: expanded from macro 'assert'
+  197 |         (mach_assert_enabled_expr(ex) && !(ex) \
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:194:3: note: expanded from macro 'mach_assert_enabled_expr'
+  194 |         (mach_assert_enabled() || __builtin_constant_p(!(ex)))
+      |          ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:134:37: note: expanded from macro 'mach_assert_enabled'
+  134 | #   define mach_assert_enabled()    improbable_static_if(mach_assert)
+      |                                     ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/machine/static_if.h:156:58: note: expanded from macro 'improbable_static_if'
+  156 |         __result = 0;                                           \
+      |                                                                 ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/arm/machdep_call.c:74:2: warning: identifier '__desc' is reserved because it starts with '__' [-Wreserved-identifier]
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:198:10: note: expanded from macro 'assert'
+  198 |         ? (void)mach_assert_abort(#ex) : (void)0)
+      |                 ^
+/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/osfmk/kern/assert.h:160:42: note: expanded from macro 'mach_assert_abort'
+  160 |         static const struct mach_assert_default __desc = {                      \
+      |                                                 ^
+552 warnings generated.
+             AS start.o
+             AS pinst.o
+             AS gxf_exceptions.o
+             AS cswitch.o
+             AS machine_routines_asm.o
+             AS memcmp_zero.o
+             AS strnlen.o
+             AS strncmp.o
+             AS platform_tests_asm.o
+             AS alternate_debugger_asm.o
+             AS sha256_compress_arm64.o
+1571 warnings generated.
+     LDFILELIST osfmk
+gmake[7]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT'
+gmake[6]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT'
+gmake[5]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/osfmk/conf'
+gmake[4]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/osfmk/conf'
+gmake[3]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/osfmk'
+gmake[2]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/BUILD/obj/DEVELOPMENT_ARM64_BCM2837'
+gmake[1]: *** [/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6/makedefs/MakeInc.top:540: build_all_bootstrap_DEVELOPMENT^ARM64^BCM2837] Error 2
+gmake[1]: Leaving directory '/Users/runner/work/warsaw-xnu-kernel-RedmiK90Ultra/warsaw-xnu-kernel-RedmiK90Ultra/xnu-src/xnu-12377.121.6'
+gmake: *** [Makefile:238: all] Error 2
+
+===== ath12k 逐文件编译错误（obj/*.err）=====
+
+===== ath12k 目录现场 =====
+total 865136
+drwxr-xr-x    9 runner  staff        288 Nov 21 11:39 .
+drwxr-xr-x    5 runner  staff        160 Nov 21 11:38 ..
+drwxr-xr-x    5 runner  staff        160 Nov 21 11:39 freebsd
+-rw-r--r--    1 runner  staff  253039000 Nov 21 11:39 freebsd-15.1-src.txz
+drwxr-xr-x  119 runner  staff       3808 Nov 21 11:39 gen
+-rw-r--r--    1 runner  staff  157262664 Nov 21 11:38 linux-7.0.14.tar.xz
+drwxr-xr-x  122 runner  staff       3904 Nov 21 11:39 obj
+drwxr-xr-x    9 runner  staff        288 Nov 21 11:39 out
+drwxr-xr-x    4 runner  staff        128 Nov 21 11:39 src
+total 1752
+drwxr-xr-x  9 runner  staff     288 Nov 21 11:39 .
+drwxr-xr-x  9 runner  staff     288 Nov 21 11:39 ..
+-rw-r--r--  1 runner  staff  873120 Nov 21 11:39 ath12k.o
+-rw-r--r--  1 runner  staff      44 Nov 21 11:39 exported.txt
+-rw-r--r--  1 runner  staff       0 Nov 21 11:39 ld.err
+-rw-r--r--  1 runner  staff     592 Nov 21 11:39 stubs.o
+-rw-r--r--  1 runner  staff     172 Nov 21 11:39 stubs.s
+-rw-r--r--  1 runner  staff      22 Nov 21 11:39 stubs.txt
+-rw-r--r--  1 runner  staff     681 Nov 21 11:39 undefined.txt
+stubs:        1
