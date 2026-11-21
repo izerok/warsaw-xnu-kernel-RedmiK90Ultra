@@ -2233,6 +2233,14 @@ struct gem_close { uint32_t handle, pad; };
 					  [[function name] UTF8String], &info,
 					  why, sizeof(why));
 		if (compute == NULL) {
+			/* The first 64 refusals, with the name and the front end's sentence: a
+			 * process that keeps asking for a pipeline this library refuses otherwise
+			 * leaves no trace of what it asked for. */
+			static unsigned compute_refused_logged;
+			if (__atomic_fetch_add(&compute_refused_logged, 1, __ATOMIC_RELAXED) < 64) {
+				rw_print("compute pipeline refused (%s): %s\n",
+					 [[function name] UTF8String] ?: "?", why);
+			}
 			/* The front end's own sentence, passed through rather than replaced: it says
 			 * which construct it refused, and an application can act on that. */
 			return [self fail:error with:[NSString stringWithUTF8String:why]];
@@ -2523,6 +2531,7 @@ struct gem_close { uint32_t handle, pad; };
 @end
 
 #include "redwoodmetal_heap.inc"   /* -newHeapWithDescriptor: and the two size answers */
+#include "redwoodmetal_residency.inc"   /* MTLResidencySet bookkeeping (upstream, P6) */
 
 @implementation RedwoodMetalBuffer
 
@@ -3759,10 +3768,17 @@ rw_bind_slot(id *slots, unsigned *count, id object, NSUInteger index)
 	memcpy(work->vertexTextures, _vertexTextures, _vertexTextureCount * sizeof(id));
 	work->vertexSamplerCount = _vertexSamplerCount;
 	memcpy(work->vertexSamplers, _vertexSamplers, _vertexSamplerCount * sizeof(id));
+	id firstColor = nil;
+	for (unsigned j = 0; j < _colorCount; j++) {
+		if (_color[j] != nil) {
+			firstColor = _color[j];
+			break;
+		}
+	}
 	rw_pipeline_note(_pipeline, _colorCount, _depth != nil ? 1u : 0u,
-	                 _colorCount > 0 ? (unsigned)[_color[0] width] : 0u,
-	                 _colorCount > 0 ? (unsigned)[_color[0] height] : 0u,
-	                 _colorCount > 0 ? (unsigned)[_color[0] sampleCount] : 0u);
+	                 firstColor != nil ? (unsigned)[firstColor width] : 0u,
+	                 firstColor != nil ? (unsigned)[firstColor height] : 0u,
+	                 firstColor != nil ? (unsigned)[firstColor sampleCount] : 0u);
 	[_commandBuffer recordWork:work];
 	[work release];
 }
