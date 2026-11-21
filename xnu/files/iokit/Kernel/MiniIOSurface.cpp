@@ -937,8 +937,6 @@ class IOSurfaceRootUserClient : public IOUserClient
 	IOReturn trapRelease(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
 	IOReturn trapWaitSharedEvent(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
 	IOReturn trapSignalSharedEvent(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
-	static IOReturn waitSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t target, uint64_t timeoutMS);
-	static IOReturn signalSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t value);
 	IOReturn lockCommon(uint32_t sid, uint32_t options, user_addr_t seedOut);
 	IOReturn useCountCommon(uint32_t sid, uint32_t category, int delta);
 
@@ -951,6 +949,8 @@ public:
 	    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference) APPLE_KEXT_OVERRIDE;
 	virtual IOExternalTrap * getTargetAndTrapForIndex(IOService ** targetP, UInt32 index) APPLE_KEXT_OVERRIDE;
 	static mach_port_name_t makeSendRight(task_t task, MiniIOSurface * surface);
+	static IOReturn waitSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t target, uint64_t timeoutMS);
+	static IOReturn signalSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t value);
 };
 
 OSDefineMetaClassAndStructors(IOSurfaceRootUserClient, IOUserClient);
