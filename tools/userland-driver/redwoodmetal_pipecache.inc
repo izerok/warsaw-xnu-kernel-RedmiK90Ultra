@@ -13,11 +13,21 @@
  * their inputs are a graph of nodes, and RenderBox builds four of them per round of icons.
  * At most RW_PIPE_IDLE_MAX pipelines without an owner are kept; past that the one idle longest
  * is destroyed, which bounds what a process that never asks twice (backboardd) holds on to.
+ *
+ * Compute pipelines get the same treatment below (upstream 0f213ae): one cache, bucketed by
+ * the first key byte into RW_COMPUTE_BUCKETS buckets, at most RW_COMPUTE_PIPE_IDLE_MAX idle
+ * pipelines kept. The key is the AIR's SHA-256 plus its length plus the entry name, so two
+ * descriptors that differ only in constants still get different pipelines. Our tree had no
+ * compute cache at all before this -- this is the whole subsystem, ported from upstream's
+ * annibalemetal_pipecache.inc, not a hunk of a diff against an existing one.
  */
 #include <CommonCrypto/CommonDigest.h>
 #include <os/lock.h>
+#import <objc/runtime.h>
 
 #define RW_PIPE_IDLE_MAX 96
+#define RW_COMPUTE_PIPE_IDLE_MAX 2048
+#define RW_COMPUTE_BUCKETS 256
 
 struct rw_pipe_entry {
 	unsigned char key[CC_SHA256_DIGEST_LENGTH];
@@ -186,6 +196,238 @@ rw_pipe_forget(struct rwa_device *device)
 		struct rw_pipe_entry *next = mine->next;
 
 		mesa.render_destroy(mine->render);
+		free(mine);
+		mine = next;
+	}
+}
+
+/*
+ * Compute pipeline cache (upstream 0f213ae, annibalemetal_pipecache.inc).
+ *
+ * Same shape as the render cache above, bucketed instead of one list: the key's first
+ * byte picks one of RW_COMPUTE_BUCKETS buckets, so a lookup scans one bucket, not the
+ * whole cache. At most RW_COMPUTE_PIPE_IDLE_MAX pipelines without an owner are kept;
+ * past that the one idle longest, across all buckets, is destroyed. The destroy runs
+ * outside the lock because the library takes its own.
+ *
+ * The key is the AIR's SHA-256 plus its length plus the entry name. A mutable NSData
+ * is hashed every time (its bytes can change); an immutable one hashes once, and the
+ * SHA is kept on the object as an associated object, so a repeated lookup does not
+ * re-hash the bytes. The bitCode hash a specialized function keeps for itself
+ * (redwoodmetal_stitch.inc, same upstream commit) is the same SHA, computed the same
+ * way; the two are kept separate because the cache keys on the raw AIR and the
+ * function on its own bitcode.
+ */
+struct rw_compute_pipe_entry {
+	unsigned char key[CC_SHA256_DIGEST_LENGTH];
+	struct rwa_device *device;
+	struct rwa_compute *compute;
+	struct rwa_compute_info info;
+	unsigned users;
+	uint64_t idle_since;
+	struct rw_compute_pipe_entry *next;
+};
+
+static struct rw_compute_pipe_entry *rw_compute_buckets[RW_COMPUTE_BUCKETS];
+static unsigned rw_compute_pipes_idle;
+static uint64_t rw_compute_pipes_released;
+static os_unfair_lock rw_compute_pipes_lock = OS_UNFAIR_LOCK_INIT;
+static char rw_air_sha_assoc_key;
+
+static void
+rw_sha256_bytes(const void *bytes, size_t length, unsigned char out[CC_SHA256_DIGEST_LENGTH])
+{
+	CC_SHA256_CTX sha;
+	const unsigned char *p = (const unsigned char *)bytes;
+	size_t left = length;
+
+	CC_SHA256_Init(&sha);
+	while (left != 0) {
+		CC_LONG chunk = left > UINT32_MAX ? UINT32_MAX : (CC_LONG)left;
+		CC_SHA256_Update(&sha, p, chunk);
+		p += chunk;
+		left -= chunk;
+	}
+	CC_SHA256_Final(out, &sha);
+}
+
+static void
+rw_compute_pipe_key_from_sha(unsigned char key[CC_SHA256_DIGEST_LENGTH],
+			     const unsigned char air_sha[CC_SHA256_DIGEST_LENGTH],
+			     uint64_t air_len, const char *entry_name)
+{
+	CC_SHA256_CTX ctx;
+	CC_SHA256_Init(&ctx);
+	CC_SHA256_Update(&ctx, air_sha, CC_SHA256_DIGEST_LENGTH);
+	CC_SHA256_Update(&ctx, &air_len, sizeof(air_len));
+	rw_pipe_add_bytes(&ctx, entry_name, entry_name ? strlen(entry_name) : 0);
+	CC_SHA256_Final(key, &ctx);
+}
+
+static void
+rw_compute_pipe_key(unsigned char key[CC_SHA256_DIGEST_LENGTH], const void *air,
+		    size_t air_len, const char *entry_name)
+{
+	unsigned char air_sha[CC_SHA256_DIGEST_LENGTH];
+
+	rw_sha256_bytes(air, air_len, air_sha);
+	rw_compute_pipe_key_from_sha(key, air_sha, (uint64_t)air_len, entry_name);
+}
+
+static void
+rw_compute_pipe_key_nsdata(unsigned char key[CC_SHA256_DIGEST_LENGTH], NSData *air,
+			   const char *entry_name)
+{
+	static Class mutable_data_cls;
+	if (mutable_data_cls == Nil)
+		mutable_data_cls = [NSMutableData class];
+
+	if ([air isKindOfClass:mutable_data_cls]) {
+		rw_compute_pipe_key(key, [air bytes], [air length], entry_name);
+		return;
+	}
+
+	unsigned char air_sha[CC_SHA256_DIGEST_LENGTH];
+	NSData *cached = objc_getAssociatedObject(air, &rw_air_sha_assoc_key);
+	if (cached != nil && [cached length] == CC_SHA256_DIGEST_LENGTH) {
+		memcpy(air_sha, [cached bytes], CC_SHA256_DIGEST_LENGTH);
+	} else {
+		rw_sha256_bytes([air bytes], [air length], air_sha);
+		@autoreleasepool {
+			NSData *d = [NSData dataWithBytes:air_sha length:CC_SHA256_DIGEST_LENGTH];
+			objc_setAssociatedObject(air, &rw_air_sha_assoc_key, d,
+						 OBJC_ASSOCIATION_RETAIN);
+		}
+	}
+	rw_compute_pipe_key_from_sha(key, air_sha, (uint64_t)[air length], entry_name);
+}
+
+/* The kept pipeline for this key, with one more owner, or NULL. */
+static struct rwa_compute *
+rw_compute_pipe_find(struct rwa_device *device, const unsigned char key[CC_SHA256_DIGEST_LENGTH],
+		     struct rwa_compute_info *info)
+{
+	struct rwa_compute *compute = NULL;
+	unsigned bucket = key[0] & (RW_COMPUTE_BUCKETS - 1u);
+
+	os_unfair_lock_lock(&rw_compute_pipes_lock);
+	for (struct rw_compute_pipe_entry *e = rw_compute_buckets[bucket]; e != NULL; e = e->next) {
+		if (e->device == device && memcmp(e->key, key, CC_SHA256_DIGEST_LENGTH) == 0) {
+			if (e->users++ == 0) {
+				rw_compute_pipes_idle--;
+			}
+			*info = e->info;
+			compute = e->compute;
+			break;
+		}
+	}
+	os_unfair_lock_unlock(&rw_compute_pipes_lock);
+	return compute;
+}
+
+/* A pipeline just built, kept with its first owner. Out of memory leaves it unkept, and
+ * rw_compute_pipe_release then destroys it as before. A second keep of the same key
+ * drops the duplicate entry, so the first one stays the owner. */
+static void
+rw_compute_pipe_keep(struct rwa_device *device, const unsigned char key[CC_SHA256_DIGEST_LENGTH],
+		     struct rwa_compute *compute, const struct rwa_compute_info *info)
+{
+	struct rw_compute_pipe_entry *e = calloc(1, sizeof(*e));
+	if (e == NULL) return;
+	unsigned bucket = key[0] & (RW_COMPUTE_BUCKETS - 1u);
+
+	memcpy(e->key, key, CC_SHA256_DIGEST_LENGTH);
+	e->device = device;
+	e->compute = compute;
+	e->info = *info;
+	e->users = 1;
+	os_unfair_lock_lock(&rw_compute_pipes_lock);
+	for (struct rw_compute_pipe_entry *cur = rw_compute_buckets[bucket]; cur != NULL; cur = cur->next) {
+		if (cur->device == device && memcmp(cur->key, key, CC_SHA256_DIGEST_LENGTH) == 0) {
+			os_unfair_lock_unlock(&rw_compute_pipes_lock);
+			free(e);
+			return;
+		}
+	}
+	e->next = rw_compute_buckets[bucket];
+	rw_compute_buckets[bucket] = e;
+	os_unfair_lock_unlock(&rw_compute_pipes_lock);
+}
+
+/* An owner of this library pipeline went away. A kept one stays until it is the oldest of more
+ * than RW_COMPUTE_PIPE_IDLE_MAX idle ones; one that was never kept is destroyed now. */
+static void
+rw_compute_pipe_release(struct rwa_compute *compute)
+{
+	struct rw_compute_pipe_entry *drop = NULL;
+	bool kept = false;
+
+	os_unfair_lock_lock(&rw_compute_pipes_lock);
+	for (unsigned b = 0; b < RW_COMPUTE_BUCKETS && !kept; b++) {
+		for (struct rw_compute_pipe_entry *e = rw_compute_buckets[b]; e != NULL; e = e->next) {
+			if (e->compute == compute) {
+				kept = true;
+				if (--e->users == 0) {
+					e->idle_since = ++rw_compute_pipes_released;
+					rw_compute_pipes_idle++;
+				}
+				break;
+			}
+		}
+	}
+	if (rw_compute_pipes_idle > RW_COMPUTE_PIPE_IDLE_MAX) {
+		struct rw_compute_pipe_entry **oldest = NULL;
+		for (unsigned b = 0; b < RW_COMPUTE_BUCKETS; b++) {
+			for (struct rw_compute_pipe_entry **at = &rw_compute_buckets[b];
+			     *at != NULL; at = &(*at)->next) {
+				if ((*at)->users == 0 &&
+				    (oldest == NULL || (*at)->idle_since < (*oldest)->idle_since)) {
+					oldest = at;
+				}
+			}
+		}
+		if (oldest != NULL) {
+			drop = *oldest;
+			*oldest = drop->next;
+			rw_compute_pipes_idle--;
+		}
+	}
+	os_unfair_lock_unlock(&rw_compute_pipes_lock);
+	if (!kept) {
+		mesa.compute_destroy(compute);
+	}
+	if (drop != NULL) {
+		mesa.compute_destroy(drop->compute);
+		free(drop);
+	}
+}
+
+/* The device is closing: its idle pipelines go first, since the library destroys a pipeline
+ * through the device it was made on. */
+static void
+rw_compute_pipe_forget(struct rwa_device *device)
+{
+	struct rw_compute_pipe_entry *mine = NULL;
+
+	os_unfair_lock_lock(&rw_compute_pipes_lock);
+	for (unsigned b = 0; b < RW_COMPUTE_BUCKETS; b++) {
+		struct rw_compute_pipe_entry **at = &rw_compute_buckets[b];
+		while (*at != NULL) {
+			struct rw_compute_pipe_entry *e = *at;
+			if (e->device == device && e->users == 0) {
+				*at = e->next;
+				e->next = mine;
+				mine = e;
+				rw_compute_pipes_idle--;
+			} else {
+				at = &e->next;
+			}
+		}
+	}
+	os_unfair_lock_unlock(&rw_compute_pipes_lock);
+	while (mine != NULL) {
+		struct rw_compute_pipe_entry *next = mine->next;
+		mesa.compute_destroy(mine->compute);
 		free(mine);
 		mine = next;
 	}

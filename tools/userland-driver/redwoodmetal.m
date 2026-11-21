@@ -1285,6 +1285,7 @@ struct gem_close { uint32_t handle, pad; };
 {
 	if (_mesa != NULL) {
 		rw_pipe_forget(_mesa);
+		rw_compute_pipe_forget(_mesa);
 		mesa.device_close(_mesa);
 	}
 	if (_gpu != IO_OBJECT_NULL) {
@@ -2206,24 +2207,36 @@ struct gem_close { uint32_t handle, pad; };
 
 	char why[512] = { 0 };
 	struct rwa_compute_info info = { 0 };
-	/* A deferred create when the library has one, else the ordinary create: the library
-	 * at the current pin has no rwa_compute_create_deferred, so this is the ordinary
-	 * create until the pin lift brings the deferred one (upstream 0f213ae). */
-	struct rwa_compute *(*create_fn)(struct rwa_device *, const void *, size_t,
-	    const char *, struct rwa_compute_info *, char *, size_t) =
-	    mesa.compute_create_deferred != NULL ? mesa.compute_create_deferred :
-	    mesa.compute_create;
-	struct rwa_compute *compute = create_fn(_mesa, [air bytes], [air length],
-						  [[function name] UTF8String], &info,
-						  why, sizeof(why));
+	/* The compute pipeline cache (redwoodmetal_pipecache.inc, upstream 0f213ae): a
+	 * descriptor with the same AIR, length and entry name gets the same library
+	 * pipeline back, so a process that rebuilds the same pipeline (iconservicesagent
+	 * rebuilds its compute pipelines every few seconds) does not recompile it. The
+	 * key hashes the AIR once per NSData object -- the SHA is cached on the object,
+	 * so a repeated lookup does not re-hash the bytes. */
+	unsigned char key[CC_SHA256_DIGEST_LENGTH];
+	rw_compute_pipe_key_nsdata(key, air, [[function name] UTF8String]);
+	struct rwa_compute *compute = rw_compute_pipe_find(_mesa, key, &info);
 	if (compute == NULL) {
-		/* The front end's own sentence, passed through rather than replaced: it says
-		 * which construct it refused, and an application can act on that. */
-		return [self fail:error with:[NSString stringWithUTF8String:why]];
-	}
-	static unsigned compute_created_logged;
-	if (__atomic_fetch_add(&compute_created_logged, 1, __ATOMIC_RELAXED) < 64) {
-		rw_print("compute pipeline %p is %s\n", (void *)compute, [[function name] UTF8String]);
+		/* A deferred create when the library has one, else the ordinary create: the library
+		 * at the current pin has no rwa_compute_create_deferred, so this is the ordinary
+		 * create until the pin lift brings the deferred one (upstream 0f213ae). */
+		struct rwa_compute *(*create_fn)(struct rwa_device *, const void *, size_t,
+		    const char *, struct rwa_compute_info *, char *, size_t) =
+		    mesa.compute_create_deferred != NULL ? mesa.compute_create_deferred :
+		    mesa.compute_create;
+		compute = create_fn(_mesa, [air bytes], [air length],
+					  [[function name] UTF8String], &info,
+					  why, sizeof(why));
+		if (compute == NULL) {
+			/* The front end's own sentence, passed through rather than replaced: it says
+			 * which construct it refused, and an application can act on that. */
+			return [self fail:error with:[NSString stringWithUTF8String:why]];
+		}
+		rw_compute_pipe_keep(_mesa, key, compute, &info);
+		static unsigned compute_created_logged;
+		if (__atomic_fetch_add(&compute_created_logged, 1, __ATOMIC_RELAXED) < 64) {
+			rw_print("compute pipeline %p is %s\n", (void *)compute, [[function name] UTF8String]);
+		}
 	}
 	return [[RedwoodMetalComputePipeline alloc] initWithRedwoodDevice:self
 								 compute:compute
@@ -2856,7 +2869,9 @@ struct gem_close { uint32_t handle, pad; };
 - (void)dealloc
 {
 	if (_compute != NULL) {
-		mesa.compute_destroy(_compute);
+		/* A kept pipeline stays in the compute cache until it is the oldest idle
+		 * one past the cap; one that was never kept is destroyed now. */
+		rw_compute_pipe_release(_compute);
 	}
 	[super dealloc];
 }

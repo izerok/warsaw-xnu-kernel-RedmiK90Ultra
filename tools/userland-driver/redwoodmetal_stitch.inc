@@ -169,6 +169,8 @@ rw_stitch_dump_linked(id descriptor)
 	NSString *_name;
 	id _constantValues;
 	NSData *_cachedBitcode;
+	BOOL _hasCachedBitCodeHash;
+	uint8_t _cachedBitCodeHash[32];
 }
 - (instancetype)initWithFunction:(id)function name:(NSString *)name constantValues:(id)values;
 - (instancetype)initWithFunction:(id)function name:(NSString *)name constantValues:(id)values
@@ -176,6 +178,7 @@ rw_stitch_dump_linked(id descriptor)
 - (id)redwoodConstantValues;
 - (id)redwoodUnspecializedFunction;
 - (NSData *)bitcodeData;
+- (const uint8_t *)bitCodeHash;
 @end
 
 @implementation RedwoodMetalSpecializedFunction
@@ -187,6 +190,26 @@ rw_stitch_dump_linked(id descriptor)
 	_name = [name copy];
 	_constantValues = [values retain];
 	_cachedBitcode = [bitcode retain];
+	/* The bitcode's SHA-256, computed once here so a caller that keys on it -- the
+	 * compute pipeline cache -- does not re-hash the bytes on every lookup. */
+	NSUInteger len = [_cachedBitcode length];
+	if (len > 0) {
+		CC_SHA256_CTX ctx;
+		const uint8_t *bytes = (const uint8_t *)[_cachedBitcode bytes];
+		NSUInteger offset = 0;
+
+		_Static_assert(sizeof(_cachedBitCodeHash) == CC_SHA256_DIGEST_LENGTH,
+			       "bitCodeHash digest length mismatch");
+		CC_SHA256_Init(&ctx);
+		while (offset < len) {
+			NSUInteger remain = len - offset;
+			CC_LONG chunk = remain > UINT32_MAX ? UINT32_MAX : (CC_LONG)remain;
+			CC_SHA256_Update(&ctx, bytes + offset, chunk);
+			offset += chunk;
+		}
+		CC_SHA256_Final(_cachedBitCodeHash, &ctx);
+		_hasCachedBitCodeHash = YES;
+	}
 	return self;
 }
 
@@ -216,6 +239,15 @@ rw_stitch_dump_linked(id descriptor)
 		return ((NSData *(*)(id, SEL))objc_msgSend)(_function, sel);
 	return nil;
 }
+- (const uint8_t *)bitCodeHash
+{
+	if (_hasCachedBitCodeHash)
+		return _cachedBitCodeHash;
+	SEL sel = sel_getUid("bitCodeHash");
+	if ([_function respondsToSelector:sel])
+		return ((const uint8_t *(*)(id, SEL))objc_msgSend)(_function, sel);
+	return NULL;
+}
 - (id)forwardingTargetForSelector:(SEL)sel
 {
 	if (sel == sel_getUid("bitcodeData") && _cachedBitcode != nil)
@@ -242,6 +274,8 @@ rw_stitch_dump_linked(id descriptor)
 		return _cachedBitcode == nil;
 	if (sel == sel_getUid("bitcodeData"))
 		return _cachedBitcode != nil || [_function respondsToSelector:sel];
+	if (sel == sel_getUid("bitCodeHash"))
+		return _hasCachedBitCodeHash || [_function respondsToSelector:sel];
 	return sel == @selector(redwoodConstantValues) || [_function respondsToSelector:sel];
 }
 - (BOOL)isKindOfClass:(Class)cls { return [_function isKindOfClass:cls]; }
