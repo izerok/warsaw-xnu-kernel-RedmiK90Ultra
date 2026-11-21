@@ -148,6 +148,7 @@ uint32_t redwood_gpu_irqs(void);                /* the GPU's completion interrup
 /* Between two looks at redwood_gpu_done(): until the next interrupt after `seen`, at most longest_us; without interrupts poll_us. */
 void redwood_gpu_pause(uint32_t seen, uint32_t poll_us, uint32_t longest_us);
 uint32_t redwood_gpu_last(void);
+uint32_t redwood_gpu_retired(void);
 void redwood_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7]);
 void redwood_gpu_speed(uint32_t *mhz, uint32_t *changes);      /* the A830's speed and its changes; 0 and 0 elsewhere */
 void redwood_gpu_report(const char *why);

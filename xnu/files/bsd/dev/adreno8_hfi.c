@@ -152,6 +152,7 @@ extern void redwood_tl(const char *format, ...) __printflike(1, 2);
  * the two give the time from the submission to the GPU starting on it, and how long it ran.
  */
 static int retire_lines = -1;
+#define LONG_SUBMISSION_US      250000
 
 static void
 adreno8_retire_note(const uint32_t *msg)
@@ -186,6 +187,9 @@ adreno8_retire_note(const uint32_t *msg)
 		redwood_tl("tl: R %u sub %llu sop %llu eop %llu\n", msg[2], submitted * 10 / 192, sop * 10 / 192, eop * 10 / 192);
 	}
 
+	if (ticks * 10 / 192 >= LONG_SUBMISSION_US) {
+		printf("adreno8: submission %u ran %llu ms on the GPU\n", msg[2], ticks * 10 / 192 / 1000);
+	}
 	while (bucket < 6 && ticks * 10 / 192 >= limits_us[bucket]) bucket++;
 	retired_by[bucket]++;
 	retired_count++;
@@ -715,6 +719,7 @@ adreno8_step_gx_power(void)
 #define SPEED_COOL_TENTHS       600
 #define SPEED_CUT_TENTHS        750
 #define SPEED_RISE_TICKS        2
+#define SPEED_DRAIN_US          20000
 
 uint32_t adreno8_speed_floor = 3, adreno8_touch_ms = 1500;
 static uint32_t adreno8_speed_now = 1, adreno8_speed_changes, adreno8_speed_limit, adreno8_speed_cool_ticks;
@@ -781,6 +786,11 @@ adreno8_speed_tick(void)
 	}
 	want = MIN(MAX(want, floor), adreno8_speed_limit);
 	if (want == adreno8_speed_now) {
+		return;
+	}
+	/* HFI changes the GX clock, voltage and DDR bandwidth with no batch in flight. A batch that
+	 * runs longer than the limit keeps the speed as it is; the next tick asks again. */
+	if (!adreno8_context_drained("GPU speed", SPEED_DRAIN_US)) {
 		return;
 	}
 	msg[0] = 1;

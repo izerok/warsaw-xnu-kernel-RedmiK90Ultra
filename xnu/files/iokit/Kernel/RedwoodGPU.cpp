@@ -70,6 +70,7 @@ bool redwood_gpu_done(uint32_t fence);
 uint32_t redwood_gpu_irqs(void);
 void redwood_gpu_pause(uint32_t seen, uint32_t poll_us, uint32_t longest_us);
 uint32_t redwood_gpu_last(void);
+uint32_t redwood_gpu_retired(void);
 uint32_t adreno8_context_depth(void);
 void redwood_gpu_worked(uint64_t * microseconds, uint32_t * submissions, uint32_t by[7]);
 void redwood_gpu_speed(uint32_t * mhz, uint32_t * changes);
@@ -219,6 +220,7 @@ struct redwood_worked {
 #define GPU_A830_SUBMIT_CMDS    82
 #define GPU_SUBMIT_BOS          8192
 #define GPU_PATIENCE_MS         5000            /* for a buffer or a submission that somebody waits for without a limit */
+#define GPU_STALL_MS            30000           /* no submission retired for this long with one waited for: the core has stopped */
 #define GPU_ASK_AGAIN_US        200             /* while waiting for the core: how long between two looks at how far it is */
 #define GPU_ASK_LONGEST_US      2000            /* ... and with its completion interrupt (gpu_irq): the longest sleep between two */
 #define GPU_PUSH_AGAIN_MS       4               /* a surface is pushed out of the cache again for a submission this long after the last */
@@ -268,16 +270,30 @@ gpuWait(uint32_t fence, uint64_t milliseconds)
 		IOLockLock(gGPULock);
 	}
 	/*
-	 * A wait of a second or more that came to nothing: the core has stopped answering. What it
-	 * and its SMMU context say is put down, and then, with boot-arg gpu_recover=1, the core is
-	 * reset and started again, which gives up the submission that hung and leaves later ones
-	 * the core's own. Without that -- or if it does not work -- nothing is waited for again in
-	 * this run: a GPU that may yet write memory of ours is given nothing more. Either way this
-	 * wait has failed, and says so: the submission did not finish.
+	 * A wait of a second or more that came to nothing says only that the submission is not done:
+	 * one of the camera's still-image passes runs for seconds. The core has stopped answering
+	 * when the timestamp it retired last has stood still for GPU_STALL_MS across such waits.
+	 * What it and its SMMU context say is put down then, and, with boot-arg gpu_recover=1, the
+	 * core is reset and started again, which gives up the submission that hung and leaves later
+	 * ones the core's own. Without that -- or if it does not work -- nothing is waited for again
+	 * in this run: a GPU that may yet write memory of ours is given nothing more. Either way
+	 * this wait has failed, and says so: the submission did not finish.
 	 */
 	if (milliseconds >= 1000 && !gGPUReported && redwood_gpu_ready()) {
-		redwood_gpu_report("no answer");
-		gGPUReported = !redwood_gpu_recover();
+		static uint32_t stalledAt;
+		static uint64_t stalledSince;
+		uint32_t retired = redwood_gpu_retired();
+		uint64_t stalled;
+
+		if (stalledSince == 0 || retired != stalledAt) {
+			stalledAt = retired;
+			stalledSince = began;
+		}
+		absolutetime_to_nanoseconds(mach_absolute_time() - stalledSince, &stalled);
+		if (stalled >= (uint64_t) GPU_STALL_MS * NSEC_PER_MSEC) {
+			redwood_gpu_report("no answer");
+			gGPUReported = !redwood_gpu_recover();
+		}
 	}
 	return false;
 }

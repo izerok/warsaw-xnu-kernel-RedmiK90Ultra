@@ -152,6 +152,12 @@ redwood_gpu_pause(uint32_t seen, uint32_t poll_us, uint32_t longest_us)
 }
 
 uint32_t
+redwood_gpu_retired(void)
+{
+	return redwood_platform_is_annibale() ? adreno8_context_retired() : 0;
+}
+
+uint32_t
 redwood_gpu_last(void)
 {
 	return redwood_platform_is_annibale() ? adreno8_context_last() : legacy_gpu_last();
