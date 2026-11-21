@@ -122,6 +122,25 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 	_bufferBytesPerRow = bytesPerRow;
 }
 
+/* The descriptor a texture was made from may carry a swizzle (MTLTextureDescriptor
+ * -swizzle, iOS 26's MTLTextureDescriptorSPI): take it over, and apply it to the
+ * library texture when it is not the identity. A descriptor without -swizzle -- an
+ * older caller, or a plain MTLTextureDescriptor -- leaves the texture as it was. */
+- (void)redwoodApplyDescriptorSwizzle:(id)descriptor
+{
+	if (descriptor == nil || ![descriptor respondsToSelector:@selector(swizzle)])
+		return;
+	MTLTextureSwizzleChannels sw = [(MTLTextureDescriptor *)descriptor swizzle];
+	_swizzle = sw;
+	_hasSwizzle = YES;
+	BOOL identity = sw.red == MTLTextureSwizzleRed && sw.green == MTLTextureSwizzleGreen &&
+			sw.blue == MTLTextureSwizzleBlue && sw.alpha == MTLTextureSwizzleAlpha;
+	if (!identity && mesa.texture_set_swizzle != NULL && _texture != NULL) {
+		mesa.texture_set_swizzle(_texture, (uint8_t)sw.red, (uint8_t)sw.green,
+					 (uint8_t)sw.blue, (uint8_t)sw.alpha);
+	}
+}
+
 /* The surface a texture read through a copy stands for (rw_surface_through_copy), so that
  * -iosurface answers it. */
 - (void)redwoodSetSurface:(CFTypeRef)surface plane:(NSUInteger)plane
@@ -300,8 +319,11 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 		rw_print("texture view: %s\n", why);
 		return nil;
 	}
-	if (mesa.texture_set_swizzle != NULL &&
-	    (swizzle.red || swizzle.green || swizzle.blue || swizzle.alpha)) {
+	BOOL identity = swizzle.red == MTLTextureSwizzleRed &&
+			swizzle.green == MTLTextureSwizzleGreen &&
+			swizzle.blue == MTLTextureSwizzleBlue &&
+			swizzle.alpha == MTLTextureSwizzleAlpha;
+	if (mesa.texture_set_swizzle != NULL && (!identity || _hasSwizzle)) {
 		mesa.texture_set_swizzle(view, (uint8_t)swizzle.red, (uint8_t)swizzle.green,
 					 (uint8_t)swizzle.blue, (uint8_t)swizzle.alpha);
 	}
@@ -322,6 +344,7 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 		texture->_parentRelativeLevel = levels.location;
 		texture->_parentRelativeSlice = slices.location;
 		texture->_swizzle = swizzle;
+		texture->_hasSwizzle = YES;
 	}
 	return texture;
 }
@@ -332,10 +355,7 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 				? 6 * MAX(_shape.array_length, 1) : MAX(_shape.array_length, 1);
 	return [self redwoodViewWithPixelFormat:format levels:levels slices:NSMakeRange(0, layers)
 					   type:_shape.type
-					swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,
-									     MTLTextureSwizzleGreen,
-									     MTLTextureSwizzleBlue,
-									     MTLTextureSwizzleAlpha)];
+					swizzle:[self swizzle]];
 }
 
 - (id)newTextureViewWithPixelFormat:(NSUInteger)format
@@ -414,7 +434,7 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 
 - (MTLTextureSwizzleChannels)swizzle
 {
-	if (_swizzle.red != 0 || _swizzle.green != 0 || _swizzle.blue != 0 || _swizzle.alpha != 0)
+	if (_hasSwizzle)
 		return _swizzle;
 	return MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
 					     MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha);
@@ -543,6 +563,9 @@ region_words_suspect(const void *texture, const uint64_t *word, const void *byte
 										    shape:&shape
 										iosurface:NULL plane:0];
 	[made redwoodSetBuffer:self offset:offset bytesPerRow:bytesPerRow];
+	if ([(id)made respondsToSelector:@selector(redwoodApplyDescriptorSwizzle:)]) {
+		[(id)made performSelector:@selector(redwoodApplyDescriptorSwizzle:) withObject:descriptor];
+	}
 	return made;
 }
 
@@ -663,7 +686,7 @@ rw_surface_through_copy(RedwoodMetalDevice *device, MTLTextureDescriptor *d, voi
 	case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint: case MTLPixelFormatRGBA32Float:
 		return MAX(alignment, 256);
 	default:
-		return alignment;
+		return alignment ? MAX(alignment, 64) : 0;
 	}
 }
 
@@ -733,10 +756,13 @@ rw_surface_through_copy(RedwoodMetalDevice *device, MTLTextureDescriptor *d, voi
 				 shape.pixel_format, shape.usage, why);
 		return nil;
 	}
-	return [[RedwoodMetalTexture alloc] initWithRedwoodDevice:self
+	RedwoodMetalTexture *surfTex = [[RedwoodMetalTexture alloc] initWithRedwoodDevice:self
 							 texture:texture
 							   shape:&shape iosurface:s plane:p];
-}
+	if ([(id)surfTex respondsToSelector:@selector(redwoodApplyDescriptorSwizzle:)]) {
+		[(id)surfTex performSelector:@selector(redwoodApplyDescriptorSwizzle:) withObject:d];
+	}
+	return surfTex;
 
 @end
 

@@ -1105,6 +1105,7 @@ struct gem_close { uint32_t handle, pad; };
 	NSUInteger _parentRelativeLevel;
 	NSUInteger _parentRelativeSlice;
 	MTLTextureSwizzleChannels _swizzle;
+	BOOL _hasSwizzle;   /* a swizzle was set explicitly, even an identity one */
 }
 - (instancetype)initWithRedwoodDevice:(RedwoodMetalDevice *)device
 	texture:(struct rwa_texture *)texture shape:(const struct rwa_texture_shape *)shape
@@ -1798,10 +1799,13 @@ struct gem_close { uint32_t handle, pad; };
 		rw_print("%s\n", why);
 		return nil;
 	}
-	return [[RedwoodMetalTexture alloc] initWithRedwoodDevice:self
+	RedwoodMetalTexture *tex = [[RedwoodMetalTexture alloc] initWithRedwoodDevice:self
 							 texture:texture
 							   shape:&shape iosurface:NULL plane:0];
-}
+	if ([(id)tex respondsToSelector:@selector(redwoodApplyDescriptorSwizzle:)]) {
+		[(id)tex performSelector:@selector(redwoodApplyDescriptorSwizzle:) withObject:descriptor];
+	}
+	return tex;
 
 /* The sampler's own base class exists and owes its protocol nothing, so this is the cheapest
  * object in the driver: the state goes to the compiler library, which maps it the same way it
