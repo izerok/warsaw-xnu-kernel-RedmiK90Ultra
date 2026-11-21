@@ -2,7 +2,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 60d8aa6148d8..6d157a86c272 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -108,6 +108,71 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -108,6 +108,75 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c         optional config_cpu_counters
