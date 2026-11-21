@@ -423,8 +423,31 @@ rw_work_time(int kind, uint64_t began)
 }
 - (id)resourceStateCommandEncoder { return nil; }
 - (id)accelerationStructureCommandEncoder { return nil; }
-- (void)encodeSignalEvent:(id)event value:(uint64_t)value { (void)event; (void)value; }
-- (void)encodeWaitForEvent:(id)event value:(uint64_t)value { (void)event; (void)value; }
+- (void)encodeSignalEvent:(id)event value:(uint64_t)value
+{
+	if (event == nil) {
+		return;
+	}
+	RedwoodMetalWork *work = [[RedwoodMetalWork alloc] init];
+	work->copyKind = RW_COPY_SIGNAL_EVENT;
+	work->sharedEvent = event;
+	work->sharedEventValue = value;
+	[self recordWork:work];
+	[work release];
+}
+
+- (void)encodeWaitForEvent:(id)event value:(uint64_t)value
+{
+	if (event == nil) {
+		return;
+	}
+	RedwoodMetalWork *work = [[RedwoodMetalWork alloc] init];
+	work->copyKind = RW_COPY_WAIT_EVENT;
+	work->sharedEvent = event;
+	work->sharedEventValue = value;
+	[self recordWork:work];
+	[work release];
+}
 
 - (id)computeCommandEncoderWithDispatchType:(NSUInteger)type
 {
@@ -452,6 +475,86 @@ static pthread_mutex_t rw_commit_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 {
 	char why[512] = { 0 };
 	uint64_t started = mach_absolute_time();
+
+	/* Shared events (upstream e3b9919): a buffer that waits on an event whose value
+	 * has not been signaled yet does not run now. It is put on the serial
+	 * redwood.metal.eventwait queue and runs when the wait is over, at most 5000 ms
+	 * per wait; a signal recorded earlier in this same buffer already counts, so a
+	 * buffer that signals and then waits on its own event runs straight through. A
+	 * defer already pending defers every later commit too, so the queue keeps the
+	 * order the buffers were committed in. The queue slot goes back before the wait,
+	 * so a waiting buffer does not hold one. */
+	static dispatch_queue_t rw_eventwait_q;
+	static dispatch_once_t rw_eventwait_once;
+	static unsigned rw_eventwait_pending;
+	static _Thread_local BOOL rw_on_eventwait_q;
+
+	if (!rw_on_eventwait_q) {
+		BOOL needs_defer = __atomic_load_n(&rw_eventwait_pending, __ATOMIC_ACQUIRE) != 0;
+		for (NSUInteger i = 0; !needs_defer && i < [_work count]; i++) {
+			RedwoodMetalWork *w = [_work objectAtIndex:i];
+			if (w->copyKind != RW_COPY_WAIT_EVENT ||
+			    ![w->sharedEvent respondsToSelector:@selector(signaledValue)] ||
+			    [(id<RedwoodSharedEventSPI>)w->sharedEvent signaledValue] >= w->sharedEventValue) {
+				continue;
+			}
+			BOOL signaled_earlier = NO;
+			for (NSUInteger j = 0; j < i; j++) {
+				RedwoodMetalWork *prev = [_work objectAtIndex:j];
+				if (prev->copyKind == RW_COPY_SIGNAL_EVENT &&
+				    prev->sharedEvent == w->sharedEvent &&
+				    prev->sharedEventValue >= w->sharedEventValue) {
+					signaled_earlier = YES;
+					break;
+				}
+			}
+			if (!signaled_earlier) {
+				needs_defer = YES;
+			}
+		}
+		if (needs_defer) {
+			_status = RW_CB_COMMITTED;
+			[self redwoodReturnSlot];
+			__atomic_add_fetch(&rw_eventwait_pending, 1, __ATOMIC_ACQ_REL);
+			dispatch_once(&rw_eventwait_once, ^{
+				rw_eventwait_q = dispatch_queue_create("redwood.metal.eventwait", DISPATCH_QUEUE_SERIAL);
+			});
+			RedwoodMetalCommandBuffer *retained = [self retain];
+			dispatch_async(rw_eventwait_q, ^{
+				@autoreleasepool {
+					rw_on_eventwait_q = YES;
+					[retained commit];
+					rw_on_eventwait_q = NO;
+					__atomic_sub_fetch(&rw_eventwait_pending, 1, __ATOMIC_ACQ_REL);
+					[retained release];
+				}
+			});
+			return;
+		}
+	}
+	if (rw_on_eventwait_q) {
+		for (NSUInteger i = 0; i < [_work count]; i++) {
+			RedwoodMetalWork *w = [_work objectAtIndex:i];
+			if (w->copyKind != RW_COPY_WAIT_EVENT ||
+			    ![w->sharedEvent respondsToSelector:@selector(waitUntilSignaledValue:timeoutMS:)]) {
+				continue;
+			}
+			BOOL signaled_earlier = NO;
+			for (NSUInteger j = 0; j < i; j++) {
+				RedwoodMetalWork *prev = [_work objectAtIndex:j];
+				if (prev->copyKind == RW_COPY_SIGNAL_EVENT &&
+				    prev->sharedEvent == w->sharedEvent &&
+				    prev->sharedEventValue >= w->sharedEventValue) {
+					signaled_earlier = YES;
+					break;
+				}
+			}
+			if (!signaled_earlier) {
+				[(id<RedwoodSharedEventSPI>)w->sharedEvent
+				    waitUntilSignaledValue:w->sharedEventValue timeoutMS:5000];
+			}
+		}
+	}
 
 	pthread_mutex_lock(&rw_commit_lock);
 	__atomic_add_fetch(&hb_commit, 1, __ATOMIC_RELAXED);
@@ -535,6 +638,13 @@ static pthread_mutex_t rw_commit_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 			}
 		}
 
+		/* A signal or a wait is not a copy: the signal is set when this buffer
+		 * completes (redwoodmetal_completion.inc), the wait happened before this
+		 * commit ran, on the eventwait queue. Nothing here runs for either. */
+		if (work->copyKind == RW_COPY_SIGNAL_EVENT ||
+		    work->copyKind == RW_COPY_WAIT_EVENT) {
+			continue;
+		}
 		if (work->copyKind != RW_COPY_NONE) {
 			if (rw_run_copy(work, why, sizeof(why)) != 0) {
 				[self failWith:why];

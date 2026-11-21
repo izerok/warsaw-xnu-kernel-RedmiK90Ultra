@@ -14,6 +14,7 @@
 	[depth retain];
 	[depthStencilState retain];
 	[indexBuffer retain];
+	[sharedEvent retain];
 	for (unsigned i = 0; i < colorCount; i++) {
 		[color[i] retain];
 	}
@@ -45,6 +46,7 @@
 		[depth release];
 		[depthStencilState release];
 		[indexBuffer release];
+		[sharedEvent release];
 		for (unsigned i = 0; i < colorCount; i++) {
 			[color[i] release];
 		}

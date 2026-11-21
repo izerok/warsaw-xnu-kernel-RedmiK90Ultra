@@ -57,6 +57,14 @@ enum {
 	kSurfaceMethodSetIndexedTimestamp = 33,
 	kSurfaceMethodLookupFromPort    = 34,
 	kSurfaceMethodCreatePort        = 35,
+	kSurfaceMethodCreateSharedEvent = 36,
+	kSurfaceMethodOpenSharedEvent   = 38,
+	kSurfaceMethodNotifyEventListener = 39,
+	kSurfaceMethodAddEventListener  = 40,
+	kSurfaceMethodRemoveEventListener = 41,
+	kSurfaceMethodCreateMemoryPool  = 46,
+	kSurfaceMethodEnsureMemoryPool  = 47,
+	kSurfaceMethodFlushMemoryPool   = 48,
 	kSurfaceMethodDetachModeCode    = 43,
 	kSurfaceMethodSetOwnershipIdentity = 44,
 	kSurfaceMethodQueryTransactionList = 58,
@@ -70,6 +78,8 @@ enum {
 	kSurfaceTrapUnlock              = 3,
 	kSurfaceTrapDetach              = 4,    /* the client is about to release: forget it has the surface */
 	kSurfaceTrapRelease             = 5,
+	kSurfaceTrapWaitSharedEvent     = 6,
+	kSurfaceTrapSignalSharedEvent   = 7,
 	kSurfaceTrapCount
 };
 
@@ -841,6 +851,10 @@ IOCoreSurfaceRoot::start(IOService * provider)
 	return true;
 }
 
+class IOSurfaceSharedEventRight;
+struct minisurf_event_listener;
+static void minisurfSharedEventInit(void);
+
 void
 MiniIOSurfaceStart(IOService * provider)
 {
@@ -848,6 +862,7 @@ MiniIOSurfaceStart(IOService * provider)
 
 	gSurfaceLock = IOLockAlloc();
 	gSurfaceKeptLock = IOLockAlloc();
+	minisurfSharedEventInit();
 	if (!PE_parse_boot_arg_str("surftrace_of", gSurfaceTraceOf, sizeof(gSurfaceTraceOf))) {
 		gSurfaceTraceOf[0] = 0;
 	}
@@ -886,17 +901,29 @@ class IOSurfaceRootUserClient : public IOUserClient
 	uint32_t                        fRefCapacity;
 	minisurf_abi                    fABI;
 	IOExternalTrap                  fTraps[kSurfaceTrapCount];
+	IOMemoryMap *                   fSharedEventMap;
+	struct minisurf_event_listener * fEventListeners;
 
 	struct minisurf_client_ref * findRef(uint32_t sid, bool detached);
 	struct minisurf_client_ref * addRef(MiniIOSurface * surface, IOReturn * error);
 	void dropRef(struct minisurf_client_ref * ref);
 	IOReturn returnSurface(struct minisurf_client_ref * ref, bool known, IOExternalMethodArguments * args);
+	IOMemoryMap * ensureSharedEventMap(void);
+	IOSurfaceSharedEventRight * copySharedEventRight(mach_port_name_t portName);
+	void dropEventListeners(uint64_t listenerID, bool all);
 
 	IOReturn methodInit(IOExternalMethodArguments * args);
 	IOReturn methodCreate(IOExternalMethodArguments * args);
 	IOReturn methodLookup(IOExternalMethodArguments * args);
 	IOReturn methodLookupFromPort(IOExternalMethodArguments * args);
 	IOReturn methodCreatePort(IOExternalMethodArguments * args);
+	IOReturn methodCreateSharedEvent(IOExternalMethodArguments * args);
+	IOReturn methodOpenSharedEvent(IOExternalMethodArguments * args);
+	IOReturn methodAddEventListener(IOExternalMethodArguments * args);
+	IOReturn methodRemoveEventListener(IOExternalMethodArguments * args);
+	IOReturn methodNotifyEventListener(IOExternalMethodArguments * args);
+	IOReturn methodCreateMemoryPool(IOExternalMethodArguments * args);
+	IOReturn methodMemoryPoolCommand(IOExternalMethodArguments * args);
 	IOReturn methodSetValue(IOExternalMethodArguments * args, const uint8_t * in, size_t inSize);
 	IOReturn methodCopyValue(IOExternalMethodArguments * args, const uint8_t * in, size_t inSize);
 	IOReturn methodRemoveValue(IOExternalMethodArguments * args, const uint8_t * in, size_t inSize);
@@ -908,6 +935,10 @@ class IOSurfaceRootUserClient : public IOUserClient
 	IOReturn trapUnlock(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
 	IOReturn trapDetach(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
 	IOReturn trapRelease(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
+	IOReturn trapWaitSharedEvent(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
+	IOReturn trapSignalSharedEvent(void * p1, void * p2, void * p3, void * p4, void * p5, void * p6);
+	static IOReturn waitSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t target, uint64_t timeoutMS);
+	static IOReturn signalSharedEventInTask(task_t task, mach_port_name_t portName, uint64_t value);
 	IOReturn lockCommon(uint32_t sid, uint32_t options, user_addr_t seedOut);
 	IOReturn useCountCommon(uint32_t sid, uint32_t category, int delta);
 
@@ -932,6 +963,8 @@ IOSurfaceRootUserClient::initWithTask(task_t owningTask, void * securityID, UInt
 	}
 	fTask = owningTask;
 	fABI = MINISURF_UNCLAIMED;
+	fSharedEventMap = NULL;
+	fEventListeners = NULL;
 	return true;
 }
 
@@ -947,6 +980,8 @@ IOSurfaceRootUserClient::start(IOService * provider)
 	fTraps[kSurfaceTrapUnlock].func = (IOTrap) & IOSurfaceRootUserClient::trapUnlock;
 	fTraps[kSurfaceTrapDetach].func = (IOTrap) & IOSurfaceRootUserClient::trapDetach;
 	fTraps[kSurfaceTrapRelease].func = (IOTrap) & IOSurfaceRootUserClient::trapRelease;
+	fTraps[kSurfaceTrapWaitSharedEvent].func = (IOTrap) & IOSurfaceRootUserClient::trapWaitSharedEvent;
+	fTraps[kSurfaceTrapSignalSharedEvent].func = (IOTrap) & IOSurfaceRootUserClient::trapSignalSharedEvent;
 	for (unsigned i = 0; i < kSurfaceTrapCount; i++) {
 		fTraps[i].object = this;
 	}
@@ -970,6 +1005,8 @@ IOSurfaceRootUserClient::clientClose(void)
 void
 IOSurfaceRootUserClient::free(void)
 {
+	dropEventListeners(0, true);
+	OSSafeReleaseNULL(fSharedEventMap);
 	if (fRefs != NULL) {
 		if (gSurfaceLock != NULL) {
 			IOLockLock(gSurfaceLock);
@@ -1063,6 +1100,8 @@ IOSurfaceRootUserClient::dropRef(struct minisurf_client_ref * ref)
 }
 
 #include "MiniIOSurfaceABI.inc"
+
+#include "MiniIOSurfaceSharedEvent.inc"
 
 /* The serialized object in a request, or NULL. */
 static OSObject *
@@ -1521,6 +1560,21 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		return methodLookupFromPort(args);
 	case kSurfaceMethodCreatePort:
 		return methodCreatePort(args);
+	case kSurfaceMethodCreateSharedEvent:
+		return methodCreateSharedEvent(args);
+	case kSurfaceMethodOpenSharedEvent:
+		return methodOpenSharedEvent(args);
+	case kSurfaceMethodNotifyEventListener:
+		return methodNotifyEventListener(args);
+	case kSurfaceMethodAddEventListener:
+		return methodAddEventListener(args);
+	case kSurfaceMethodRemoveEventListener:
+		return methodRemoveEventListener(args);
+	case kSurfaceMethodCreateMemoryPool:
+		return methodCreateMemoryPool(args);
+	case kSurfaceMethodEnsureMemoryPool:
+	case kSurfaceMethodFlushMemoryPool:
+		return methodMemoryPoolCommand(args);
 
 	case kSurfaceMethodSetValue:
 	case kSurfaceMethodCopyValue:

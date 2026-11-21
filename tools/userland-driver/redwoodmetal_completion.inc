@@ -115,6 +115,17 @@ static void *rw_completion_main(void *unused);
 	if (_status != RW_CB_ERROR && mesa.buffer_textures_writeback != NULL) {
 		mesa.buffer_textures_writeback(device);
 	}
+	/* A signal recorded in this buffer is set now that the buffer is done: the
+	 * next buffer waiting on it can run. A buffer that failed does not signal. */
+	if (_status != RW_CB_ERROR) {
+		for (RedwoodMetalWork *work in _work) {
+			if (work->copyKind == RW_COPY_SIGNAL_EVENT &&
+			    [work->sharedEvent respondsToSelector:@selector(setSignaledValue:)]) {
+				[(id<RedwoodSharedEventSPI>)work->sharedEvent
+				    setSignaledValue:work->sharedEventValue];
+			}
+		}
+	}
 	pthread_mutex_lock(&rw_completion_lock);
 	if (_status != RW_CB_ERROR) {
 		_status = RW_CB_COMPLETED;

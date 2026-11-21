@@ -9,9 +9,20 @@
 @class RedwoodMetalRenderPipeline;
 
 enum RWCopyKind { RW_COPY_NONE, RW_COPY_BUFFER, RW_COPY_TEXTURE, RW_COPY_MIPMAP,
-                   RW_COPY_BUFFER_TEXTURE, RW_COPY_ERROR };
+                   RW_COPY_BUFFER_TEXTURE, RW_COPY_ERROR,
+                   RW_COPY_SIGNAL_EVENT, RW_COPY_WAIT_EVENT };
 
 #define RW_BLIT_TEXTURE RW_COPY_TEXTURE
+
+/* What a shared event answers (IOSurfaceSharedEvent in the kernel, MiniIOSurfaceSharedEvent.inc):
+ * its signaled value, setting it, and waiting for it. The work item only ever talks to an
+ * event through these three, and checks each one with respondsToSelector: first, so an
+ * object that is not a shared event is never asked. */
+@protocol RedwoodSharedEventSPI <NSObject>
+- (uint64_t)signaledValue;
+- (void)setSignaledValue:(uint64_t)value;
+- (BOOL)waitUntilSignaledValue:(uint64_t)value timeoutMS:(uint64_t)timeoutMS;
+@end
 
 @interface RedwoodMetalWork : NSObject {
 @private
@@ -82,6 +93,8 @@ enum RWCopyKind { RW_COPY_NONE, RW_COPY_BUFFER, RW_COPY_TEXTURE, RW_COPY_MIPMAP,
 	unsigned vertexTextureCount, vertexSamplerCount;
 	unsigned groups[3], size[3];
 	unsigned threadgroupBytes;   /* -setThreadgroupMemoryLength: for threadgroup buffer 0 */
+	id sharedEvent;              /* -encodeSignalEvent:value: / -encodeWaitForEvent:value: */
+	uint64_t sharedEventValue;
 }
 /* Call once the encoder has finished filling this immutable work item. */
 - (void)retainResources;
