@@ -68,9 +68,9 @@ index 60d8aa6148d8..6d157a86c272 100644
 +bsd/dev/annibale_battery.c		standard
 +bsd/dev/annibale_cpufreq.c		standard
 +bsd/dev/annibale_buttons.c		standard
-+bsd/dev/annibale_bt_uart.c		standard
-+bsd/dev/annibale_bt_hci.c		standard
-+bsd/dev/annibale_bt_ios.c		standard
++bsd/dev/redwood_bt_uart.c		standard
++bsd/dev/redwood_bt_hci.c		standard
++bsd/dev/redwood_bt_ios.c		standard
  
  bsd/libkern/crc32.c			standard
  bsd/libkern/random.c			standard

@@ -7,7 +7,7 @@
  * BSD Name and 6-byte local-mac-address, connects the kernel control socket com.apple.uart.sk.bluetooth,
  * reads the 16-byte Skywalk nexus UUID from socket option 0x5412, and opens a Skywalk channel on that
  * nexus. Both the control socket connect and /dev/uart.bluetooth open wait up to 40 s for the kernel's
- * WCN7850 firmware download and HCI Reset (annibale_bt_hci.c) to finish before serving H4 packets.
+ * WCN7850 firmware download and HCI Reset (redwood_bt_hci.c) to finish before serving H4 packets.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -31,7 +31,7 @@
 #include <sys/vnode.h>
 
 #include <os/atomic_private.h>
-#include "annibale_bt_private.h"
+#include "redwood_bt_private.h"
 
 extern void RedwoodBTStart(const char *bsdname, const uint8_t *address);
 extern void RedwoodBTSetAddress(const uint8_t *address);
@@ -48,12 +48,14 @@ static uint32_t bt_ring_in, bt_ring_out, bt_rx_lost;
 static lck_mtx_t *bt_ring_lock;
 static struct selinfo bt_sel;
 static int bt_serving;
-static volatile int bt_ended;           /* the bring-up thread finished without serving: nothing will come */
+static int bt_ended;           /* the bring-up thread finished without serving: nothing will come */
 static bool bt_ibs_asleep;
 static volatile uint32_t bt_irq_event;
 
 SYSCTL_INT(_kern_redwood, OID_AUTO, bt_ready, CTLFLAG_RD | CTLFLAG_LOCKED, &bt_serving, 0,
     "whether the WCN7850 Bluetooth firmware and reset are ready");
+SYSCTL_INT(_kern_redwood, OID_AUTO, bt_ended, CTLFLAG_RD | CTLFLAG_LOCKED, &bt_ended, 0,
+    "whether Bluetooth bring-up ended without serving");
 
 static void
 ms(uint32_t n)
@@ -92,8 +94,8 @@ bt_ring_fill(void)
 	const uint8_t *rx;
 	bool send_wake_ack = false;
 
-	(void)annibale_bt_uart_poll();
-	rx = annibale_bt_uart_rx(&have);
+	(void)redwood_bt_uart_poll();
+	rx = redwood_bt_uart_rx(&have);
 	for (uint32_t i = 0; i < have; i++) {
 		uint8_t b = rx[i];
 
@@ -151,12 +153,12 @@ bt_ring_fill(void)
 		}
 	}
 	if (have != 0) {
-		annibale_bt_uart_take(have);
+		redwood_bt_uart_take(have);
 	}
 	if (send_wake_ack) {
 		uint8_t ack = IBS_WAKE_ACK;
 
-		(void)annibale_bt_uart_write(&ack, 1);
+		(void)redwood_bt_uart_write(&ack, 1);
 	}
 }
 
@@ -170,9 +172,9 @@ bt_uart_send_locked(const uint8_t *data, uint32_t len)
 		uint8_t wake = IBS_WAKE_IND;
 
 		bt_ibs_asleep = false;
-		(void)annibale_bt_uart_write(&wake, 1);
+		(void)redwood_bt_uart_write(&wake, 1);
 	}
-	ok = annibale_bt_uart_write(data, len);
+	ok = redwood_bt_uart_write(data, len);
 	bt_ring_fill();
 	lck_mtx_unlock(bt_ring_lock);
 	return ok;
@@ -208,6 +210,10 @@ static errno_t
 btsk_pre_connect(kern_nexus_provider_t nxprov __unused, proc_t p __unused, kern_nexus_t nexus,
     nexus_port_t port, kern_channel_t channel __unused, void **ch_ctx)
 {
+	if (!__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE)) {
+		*ch_ctx = NULL;
+		return ENXIO;
+	}
 	kern_pbufpool_t tx_pp = NULL;
 	errno_t error = kern_nexus_get_pbufpool(nexus, &tx_pp, &btsk_rx_pp);
 
@@ -443,15 +449,17 @@ bt_kctl_connect(kern_ctl_ref ref __unused, struct sockaddr_ctl *sac, void **unit
 {
 	int waited;
 
-	for (waited = 0; !bt_serving && !bt_ended && waited < 40000; waited += 50) {
+	for (waited = 0; !__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE) &&
+	    !__atomic_load_n(&bt_ended, __ATOMIC_ACQUIRE) && waited < 40000; waited += 50) {
 		ms(50);
 	}
+	int ready = __atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE);
 	bt_kctl_unit = sac->sc_unit;
 	*unitinfo = NULL;
 	bt_kctl_up = 1;
 	bt_say("bt: connected to com.apple.uart.sk.bluetooth (unit %u, waited %d ms, ready %d)\n",
-	    sac->sc_unit, waited, bt_serving);
-	return bt_serving ? 0 : ENXIO;
+	    sac->sc_unit, waited, ready);
+	return ready ? 0 : ENXIO;
 }
 
 static errno_t
@@ -465,6 +473,10 @@ bt_kctl_disconnect(kern_ctl_ref ref __unused, u_int32_t unit __unused, void *uni
 static errno_t
 bt_kctl_send(kern_ctl_ref ref __unused, u_int32_t unit __unused, void *unitinfo __unused, mbuf_t m, int flags __unused)
 {
+	if (!__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE)) {
+		mbuf_freem(m);
+		return ENXIO;
+	}
 	static uint32_t said;
 	uint8_t buf[1100];
 	size_t n = mbuf_pkthdr_len(m);
@@ -474,7 +486,7 @@ bt_kctl_send(kern_ctl_ref ref __unused, u_int32_t unit __unused, void *unitinfo 
 	}
 	if (mbuf_copydata(m, 0, n, buf) == 0 && n != 0) {
 		if (said++ < 24) {
-			annibale_bt_hex("iOS sends (socket)", buf, (uint32_t)(n < 16 ? n : 16));
+			redwood_bt_hex("iOS sends (socket)", buf, (uint32_t)(n < 16 ? n : 16));
 		}
 		if (!bt_answer_vendor(buf, (uint32_t)n)) {
 			(void)bt_uart_send_locked(buf, (uint32_t)n);
@@ -543,10 +555,13 @@ bt_kctl_register(void)
 static void
 bt_ios_put(const uint8_t *p, uint32_t n)
 {
+	if (!__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE)) {
+		return;
+	}
 	static uint32_t said;
 
 	if (said++ < 120) {
-		annibale_bt_hex("iOS sends (channel)", p, n < 16 ? n : 16);
+		redwood_bt_hex("iOS sends (channel)", p, n < 16 ? n : 16);
 	}
 	if (!bt_answer_vendor(p, n)) {
 		(void)bt_uart_send_locked(p, n);
@@ -676,7 +691,7 @@ bt_answer_vendor(const uint8_t *packet, uint32_t n)
 		}
 	}
 	if (packet[1] == 0x48 && packet[2] == 0xfc) {
-		uint32_t old_baud = annibale_bt_uart_get_baud();
+		uint32_t old_baud = redwood_bt_uart_get_baud();
 		uint32_t req_baud = (n > 4 && packet[4] == 0x0e) ? 3000000u : 115200u;
 		bool chip_acked = false;
 
@@ -736,9 +751,9 @@ bt_answer_vendor(const uint8_t *packet, uint32_t n)
 		delay_for_interval(10, NSEC_PER_MSEC);
 
 		/* 4. 切换主机串口时钟，失败时执行降级回滚 */
-		if (!annibale_bt_uart_set_baud(req_baud)) {
+		if (!redwood_bt_uart_set_baud(req_baud)) {
 			bt_say("bt: stop: host UART switch to %u failed; performing rollback to %u baud\n", req_baud, old_baud);
-			(void)annibale_bt_uart_set_baud(old_baud ? old_baud : 115200u);
+			(void)redwood_bt_uart_set_baud(old_baud ? old_baud : 115200u);
 			return false;
 		}
 
@@ -813,14 +828,14 @@ bt_answer_vendor(const uint8_t *packet, uint32_t n)
 }
 
 void
-annibale_bt_uart_isr(void *ctx __unused, uint32_t intid)
+redwood_bt_uart_isr(void *ctx __unused, uint32_t intid)
 {
 	/* 1. 屏蔽 GIC 电平中断，防止工作线程运行期间产生中断风暴 */
 	extern void gic_v3_spi_mask(uint32_t intid);
 	gic_v3_spi_mask(intid);
 
 	/* 2. 清除 GENI 硬件中断状态位 */
-	annibale_bt_uart_irq_clear();
+	redwood_bt_uart_irq_clear();
 
 	/* 3. 中断安全地唤醒工作线程，严禁获取睡眠互斥锁 */
 	os_atomic_inc(&bt_irq_event, relaxed);
@@ -871,12 +886,14 @@ bt_dev_open(dev_t dev __unused, int flags, int devtype __unused, struct proc *p 
 
 	if (bt_opens < 8) {
 		bt_opens++;
-		bt_say("bt: /dev/uart.bluetooth opened (flags %#x; chip %s)\n", flags, bt_serving ? "up" : "not up yet");
+		bt_say("bt: /dev/uart.bluetooth opened (flags %#x; chip %s)\n", flags,
+		    __atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE) ? "up" : "not up yet");
 	}
-	for (waited = 0; !bt_serving && !bt_ended && waited < 40000; waited += 50) {
+	for (waited = 0; !__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE) &&
+	    !__atomic_load_n(&bt_ended, __ATOMIC_ACQUIRE) && waited < 40000; waited += 50) {
 		ms(50);
 	}
-	return bt_serving ? 0 : ENXIO;
+	return __atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE) ? 0 : ENXIO;
 }
 
 static int
@@ -920,6 +937,9 @@ bt_dev_read(dev_t dev __unused, struct uio *uio, int ioflag)
 static int
 bt_dev_write(dev_t dev __unused, struct uio *uio, int ioflag __unused)
 {
+	if (!__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE)) {
+		return ENXIO;
+	}
 	uint8_t buf[512];
 	int error = 0;
 
@@ -933,7 +953,7 @@ bt_dev_write(dev_t dev __unused, struct uio *uio, int ioflag __unused)
 		}
 		if (bt_writes < 12) {
 			bt_writes++;
-			annibale_bt_hex(buf[0] == 1 ? "iOS writes a command" : buf[0] == 2 ? "iOS writes ACL" : "iOS writes",
+			redwood_bt_hex(buf[0] == 1 ? "iOS writes a command" : buf[0] == 2 ? "iOS writes ACL" : "iOS writes",
 			    buf, n < 16 ? n : 16);
 		}
 		if (bt_answer_vendor(buf, n)) {
@@ -996,7 +1016,7 @@ static const struct cdevsw bt_cdevsw = {
 };
 
 void
-annibale_bt_ios_early(void)
+redwood_bt_ios_early(void)
 {
 	static lck_grp_t *grp;
 	int major;
@@ -1032,20 +1052,20 @@ annibale_bt_ios_early(void)
  * and connects answer ENXIO at once.
  */
 void
-annibale_bt_ios_ended(void)
+redwood_bt_ios_ended(void)
 {
-	if (!bt_serving) {
-		bt_ended = 1;
+	if (!__atomic_load_n(&bt_serving, __ATOMIC_ACQUIRE)) {
+		__atomic_store_n(&bt_ended, 1, __ATOMIC_RELEASE);
 		bt_say("bt: bring-up ended without the chip; /dev/uart.bluetooth and the control socket answer ENXIO\n");
 	}
 }
 
 void
-annibale_bt_ios_serve(const uint8_t addr[6])
+redwood_bt_ios_serve(const uint8_t addr[6])
 {
 	thread_t thread;
 
-	annibale_bt_ios_early();
+	redwood_bt_ios_early();
 	if (bt_ring == NULL) {
 		return;
 	}
@@ -1054,11 +1074,12 @@ annibale_bt_ios_serve(const uint8_t addr[6])
 	}
 	lck_mtx_lock(bt_ring_lock);
 	bt_ring_fill();
-	bt_serving = 1;
+	__atomic_store_n(&bt_serving, 1, __ATOMIC_RELEASE);
 	lck_mtx_unlock(bt_ring_lock);
 	if (kernel_thread_start(bt_pump_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_set_thread_name(thread, "bt-uart-pump");
 		thread_deallocate(thread);
 	}
+	redwood_bt_uart_enable_irq();
 	bt_say("bt: /dev/uart.bluetooth and com.apple.uart.sk.bluetooth serving; iOS's bluetoothd drives the chip now\n");
 }

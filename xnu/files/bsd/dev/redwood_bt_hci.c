@@ -1,5 +1,5 @@
 /*
- * boot-arg bt=N: the WCN7850's Bluetooth half brought up by the kernel alone, over SE14 (annibale_bt_uart.c). It
+ * boot-arg bt=N: the WCN7850's Bluetooth half brought up by the kernel alone, over SE14 (redwood_bt_uart.c). It
  * starts from mhi_pcie.c once mhi_pcie_power.c has the chip's supplies on and BT_EN high (pcie=N pcie_power=1
  * pcie_bt_en=1), in a thread of its own, so the Wi-Fi bring-up goes on beside it. Each step is on top of the one
  * before:
@@ -9,7 +9,7 @@
  *   bt=3  Linux btqca.c's qca_uart_setup for WCN7850: rampatch hmtbtfw<rom>.tlv, board id, NVM hmtnv<rom>.b<board>
  *         (hmtnv<rom>.bin without a match) from fw/ of the RAM disk (package.py BT_FW=1), SoC logging off, HCI Reset,
  *         the firmware's build string, Read_BD_ADDR, Read_Local_Version, a 10 s LE scan
- *   bt=4  instead of the kernel's LE scan, hand the initialized chip to iOS's bluetoothd (annibale_bt_ios.c)
+ *   bt=4  instead of the kernel's LE scan, hand the initialized chip to iOS's bluetoothd (redwood_bt_ios.c)
  *
  * Every line starts with "bt: "; a step that fails says what it read, then "bt: stop: ...", and the thread ends.
  * Nothing here touches BT_EN, the supplies or the Wi-Fi side. The link stays at 115200: the NVM's HCI transport tag
@@ -20,8 +20,9 @@
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
+#include <sys/sysctl.h>
 
-#include "annibale_bt_private.h"
+#include "redwood_bt_private.h"
 
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 extern kern_return_t thread_terminate(thread_t thread);
@@ -70,6 +71,11 @@ static struct {
 	uint8_t rom_ver;
 } chip;
 
+SYSCTL_DECL(_kern_redwood);
+static uint32_t bt_piece;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bt_piece, CTLFLAG_RD | CTLFLAG_LOCKED, &bt_piece, 0,
+    "Bluetooth firmware pieces sent");
+
 static void
 ms(uint32_t n)
 {
@@ -95,22 +101,22 @@ hci_event(uint8_t *ev, uint32_t max, uint32_t wait_ms)
 	end = mach_absolute_time() + span;
 	for (;;) {
 		uint32_t have, skip = 0, whole = 0;
-		const uint8_t *rx = annibale_bt_uart_rx(&have);
+		const uint8_t *rx = redwood_bt_uart_rx(&have);
 
 		while (skip < have && rx[skip] != H4_EVENT && rx[skip] != H4_ACL && rx[skip] != H4_SCO) {
 			if (rx[skip] == 0xfd) {
 				uint8_t ack = 0xfc;
 
-				(void)annibale_bt_uart_write(&ack, 1);
+				(void)redwood_bt_uart_write(&ack, 1);
 			}
 			skip++;
 		}
 		if (skip) {
 			if (shown++ < 4) {
-				annibale_bt_hex("not an event, dropped", rx, skip);
+				redwood_bt_hex("not an event, dropped", rx, skip);
 			}
-			annibale_bt_uart_take(skip);
-			rx = annibale_bt_uart_rx(&have);
+			redwood_bt_uart_take(skip);
+			rx = redwood_bt_uart_rx(&have);
 		}
 		if (have >= 5 && rx[0] == H4_ACL) {
 			whole = 5u + (rx[3] | (uint32_t)rx[4] << 8);
@@ -119,31 +125,31 @@ hci_event(uint8_t *ev, uint32_t max, uint32_t wait_ms)
 		}
 		if (whole > BT_UART_RX_BYTES - 4) {
 			/* longer than the receive buffer can collect, so not a packet: the type byte was noise */
-			annibale_bt_uart_take(1);
+			redwood_bt_uart_take(1);
 			continue;
 		}
 		if (whole != 0 && have >= whole) {
 			if (rx[0] == H4_ACL && (rx[1] | rx[2] << 8) == QCA_DEBUG_HANDLE) {
 				if (log_packets++ < 2) {
-					annibale_bt_hex("SoC log packet, skipped", rx, whole);
+					redwood_bt_hex("SoC log packet, skipped", rx, whole);
 				}
 			} else if (shown++ < 4) {
-				annibale_bt_hex("not an event, skipped", rx, whole);
+				redwood_bt_hex("not an event, skipped", rx, whole);
 			}
-			annibale_bt_uart_take(whole);
+			redwood_bt_uart_take(whole);
 			continue;
 		}
 		if (have >= 3 && rx[0] == H4_EVENT && have >= 3u + rx[2]) {
 			uint32_t n = 3u + rx[2], kept = n < max ? n : max;
 
 			memcpy(ev, rx, kept);
-			annibale_bt_uart_take(n);
+			redwood_bt_uart_take(n);
 			return kept;
 		}
 		if (mach_absolute_time() > end) {
 			return 0;
 		}
-		if (annibale_bt_uart_poll() == 0) {
+		if (redwood_bt_uart_poll() == 0) {
 			delay_for_interval(100, NSEC_PER_USEC);
 		}
 	}
@@ -161,7 +167,7 @@ hci_send(uint16_t op, const uint8_t *param, uint32_t n)
 	if (n) {
 		memcpy(packet + 4, param, n);
 	}
-	if (!annibale_bt_uart_write(packet, 4 + n)) {
+	if (!redwood_bt_uart_write(packet, 4 + n)) {
 		bt_say("bt: command %#06x was not sent\n", op);
 		return false;
 	}
@@ -187,7 +193,7 @@ hci_cmd(uint16_t op, const uint8_t *param, uint32_t n, uint8_t *ev, uint32_t max
 		    (ev[1] == EV_COMMAND_STATUS && got >= 7 && (ev[5] | ev[6] << 8) == op)) {
 			return got;
 		}
-		annibale_bt_hex("an event on the way", ev, got);
+		redwood_bt_hex("an event on the way", ev, got);
 	}
 	return 0;
 }
@@ -209,7 +215,7 @@ rom_version(const char *when)
 
 	if (n < 9 + 12 || ev[1] != EV_COMMAND_COMPLETE || ev[6] != 0 || ev[7] != EDL_VERSION) {
 		if (n) {
-			annibale_bt_hex("version: unexpected answer", ev, n);
+			redwood_bt_hex("version: unexpected answer", ev, n);
 		}
 		return false;
 	}
@@ -238,7 +244,7 @@ board_id(void)
 		chip.board = 0;
 		bt_say("bt: board: no id (%u bytes); the default NVM goes\n", n);
 		if (n) {
-			annibale_bt_hex("board: answer", ev, n);
+			redwood_bt_hex("board: answer", ev, n);
 		}
 	}
 }
@@ -338,6 +344,7 @@ download(const char *name, bool nvm)
 	bt_say("bt: %s: sending %u bytes in %u pieces, %s\n", name, size, (size + EDL_SEGMENT - 1) / EDL_SEGMENT,
 	    nvm || mode == 0 ? "each answered" : "unanswered");
 	cmd[0] = EDL_PATCH_TLV;
+	__atomic_store_n(&bt_piece, 0, __ATOMIC_RELAXED);
 	while (sent < size) {
 		uint32_t piece = size - sent < EDL_SEGMENT ? size - sent : EDL_SEGMENT, n;
 		bool answer = nvm || mode == 0;
@@ -358,12 +365,13 @@ download(const char *name, bool nvm)
 		    ev[6] != 0 || ev[7] != EDL_PATCH_TLV) {
 			bt_say("bt: stop: %s: piece %u (offset %u) %s\n", name, pieces, sent, n ? "refused" : "not answered");
 			if (n) {
-				annibale_bt_hex("its answer", ev, n);
+				redwood_bt_hex("its answer", ev, n);
 			}
 			return false;
 		}
 		sent += piece;
 		pieces++;
+		__atomic_store_n(&bt_piece, pieces, __ATOMIC_RELAXED);
 		if (sent * 100 / size >= next) {
 			bt_say("bt: %s: %u%%\n", name, sent * 100 / size);
 			next += 25;
@@ -373,7 +381,7 @@ download(const char *name, bool nvm)
 		uint32_t got = hci_event(ev, sizeof(ev), 1000);
 
 		if (got) {
-			annibale_bt_hex("after the last piece", ev, got);
+			redwood_bt_hex("after the last piece", ev, got);
 		} else {
 			bt_say("bt: %s: no event after the last piece (download mode %u)\n", name, mode);
 		}
@@ -515,15 +523,15 @@ rom_answers(void)
 		uint8_t ev[64];
 		uint32_t n;
 
-		if (!annibale_bt_uart_config(oversampling[i])) {
+		if (!redwood_bt_uart_config(oversampling[i])) {
 			return false;
 		}
 		ms(50);
-		(void)annibale_bt_uart_poll();
-		rx = annibale_bt_uart_rx(&have);
+		(void)redwood_bt_uart_poll();
+		rx = redwood_bt_uart_rx(&have);
 		if (have) {
-			annibale_bt_hex("before anything was sent", rx, have);
-			annibale_bt_uart_take(have);
+			redwood_bt_hex("before anything was sent", rx, have);
+			redwood_bt_uart_take(have);
 		}
 		if (rom_version("from ROM")) {
 			return true;
@@ -531,9 +539,9 @@ rom_answers(void)
 		/* whether anything at all comes back: an HCI Reset is answered by any HCI controller */
 		n = hci_cmd(OP_RESET, NULL, 0, ev, sizeof(ev), 500);
 		if (n) {
-			annibale_bt_hex("HCI Reset answer", ev, n);
+			redwood_bt_hex("HCI Reset answer", ev, n);
 		}
-		annibale_bt_uart_status("after no version");
+		redwood_bt_uart_status("after no version");
 	}
 	bt_say("bt: stop: rom: no version answer at oversampling 16 or 32\n");
 	return false;
@@ -546,7 +554,7 @@ rom_answers(void)
  * The host pauses 10 ms for line settle, then switches SE14 S6 RCG clock to 48 MHz (divider 1).
  */
 bool
-annibale_bt_hci_set_baudrate(uint32_t baud)
+redwood_bt_hci_set_baudrate(uint32_t baud)
 {
 	uint8_t param = (baud == 3000000u) ? QCA_BAUDRATE_3000000 : QCA_BAUDRATE_115200;
 	uint8_t ev[32];
@@ -557,13 +565,13 @@ annibale_bt_hci_set_baudrate(uint32_t baud)
 	if (!hci_ok(ev, n, 7)) {
 		bt_say("bt: stop: 0xFC48 refused or timed out (%u bytes, status %#x)\n", n, n >= 7 ? ev[6] : 0xff);
 		if (n) {
-			annibale_bt_hex("0xFC48 answer", ev, n);
+			redwood_bt_hex("0xFC48 answer", ev, n);
 		}
 		return false;
 	}
 	bt_say("bt: chip accepted 0xFC48, settling before host UART switch\n");
 	ms(10);
-	if (!annibale_bt_uart_set_baud(baud)) {
+	if (!redwood_bt_uart_set_baud(baud)) {
 		bt_say("bt: stop: host UART baud switch to %u failed\n", baud);
 		return false;
 	}
@@ -580,7 +588,7 @@ bring_up(uint32_t steps)
 	uint32_t n, manufacturer = 0, devices;
 	static const uint8_t logging_off[2] = { 0x14, 0x00 };
 
-	if (!annibale_bt_uart_open() || steps < 2) {
+	if (!redwood_bt_uart_open() || steps < 2) {
 		bt_say("bt: end after step 1\n");
 		return;
 	}
@@ -604,7 +612,7 @@ bring_up(uint32_t steps)
 	n = hci_cmd(OP_RESET, NULL, 0, ev, sizeof(ev), 3000);
 	if (!hci_ok(ev, n, 7)) {
 		bt_say("bt: stop: reset: HCI Reset after the firmware failed (%u bytes, status %#x)\n", n, n >= 7 ? ev[6] : 0xff);
-		annibale_bt_uart_status("after reset");
+		redwood_bt_uart_status("after reset");
 		return;
 	}
 	bt_say("bt: reset: done\n");
@@ -630,11 +638,11 @@ bring_up(uint32_t steps)
 	{
 		uint32_t target_baud = 0;
 		if (PE_parse_boot_argn("bt_baud", &target_baud, sizeof(target_baud)) && target_baud == 3000000u) {
-			(void)annibale_bt_hci_set_baudrate(3000000u);
+			(void)redwood_bt_hci_set_baudrate(3000000u);
 		}
 	}
 	if (steps >= 4) {
-		annibale_bt_ios_serve(addr);
+		redwood_bt_ios_serve(addr);
 		bt_say("bt: done: ROM %02x board %#x, %s + %s, address %02x:%02x:%02x:%02x:%02x:%02x, manufacturer %#x, "
 		    "handed to bluetoothd\n", chip.rom_ver, chip.board, patch, nvm_used, addr[0], addr[1], addr[2], addr[3],
 		    addr[4], addr[5], manufacturer);
@@ -653,24 +661,28 @@ bt_thread(void *parameter, __unused wait_result_t result)
 
 	bring_up(steps);
 	if (steps >= 4) {
-		annibale_bt_ios_ended();
+		redwood_bt_ios_ended();
 	}
 	thread_terminate(current_thread());
 }
 
 void
-annibale_bt_start(void)
+redwood_bt_start(void)
 {
+	static int bt_started;
 	uint32_t steps = 0, bt_en = 0;
 	thread_t thread;
 
 	if (!PE_parse_boot_argn("bt", &steps, sizeof(steps)) || steps == 0) {
 		return;
 	}
+	if (__atomic_exchange_n(&bt_started, 1, __ATOMIC_ACQ_REL)) {
+		return;
+	}
 	if (!PE_parse_boot_argn("pcie_bt_en", &bt_en, sizeof(bt_en)) || bt_en == 0) {
 		bt_say("bt: stop: bt=%u needs pcie_bt_en=1, BT_EN stays low without it\n", steps);
 		if (steps >= 4) {
-			annibale_bt_ios_ended();
+			redwood_bt_ios_ended();
 		}
 		return;
 	}

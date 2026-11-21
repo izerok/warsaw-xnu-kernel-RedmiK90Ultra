@@ -3,8 +3,8 @@
 
 Empirically tests and verifies:
 1. Milestone 4:
-   - annibale_bt_ios.c baud rate transition sequence (vendor command 0xFC48, chip ACK wait, return code checks, rollback).
-   - annibale_bt_uart_isr() interrupt handler (lock-free ISR, gic_v3_spi_mask/unmask, thread_wakeup, no sleeping mutex in ISR).
+   - redwood_bt_ios.c baud rate transition sequence (vendor command 0xFC48, chip ACK wait, return code checks, rollback).
+   - redwood_bt_uart_isr() interrupt handler (lock-free ISR, gic_v3_spi_mask/unmask, thread_wakeup, no sleeping mutex in ISR).
    - AudioReach APM graph and smart amp (buffer arithmetic, dynamic SMMU page size, physical address <= 4 GB, IPCC doorbell, open-drain SCL).
 2. Milestone 5:
    - annibale_camera.c (CAM-CPAS GDSC PWR_ON polling and collapse, CSID-lite0 TPG and IFE-lite0 WM0 DMA, lock scope decoupling).
@@ -27,14 +27,14 @@ USERLAND_ROOT = os.path.join(TOP_ROOT, "hackios-xnu-userland")
 # ==============================================================================
 
 def test_m4_bt_baud_rate_transition():
-    """Verify annibale_bt_ios.c baud rate transition sequence and fallback behavior."""
-    bt_ios_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/annibale_bt_ios.c")
+    """Verify redwood_bt_ios.c baud rate transition sequence and fallback behavior."""
+    bt_ios_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/redwood_bt_ios.c")
     with open(bt_ios_c, "r", encoding="utf-8") as f:
         src = f.read()
 
     # Locate the 0xFC48 handling block
     idx_48 = src.find("packet[1] == 0x48 && packet[2] == 0xfc")
-    assert idx_48 != -1, "0xFC48 vendor command check missing in annibale_bt_ios.c"
+    assert idx_48 != -1, "0xFC48 vendor command check missing in redwood_bt_ios.c"
     block_end = src.find("return true;", idx_48)
     block = src[idx_48:block_end + len("return true;")]
 
@@ -44,11 +44,11 @@ def test_m4_bt_baud_rate_transition():
     )
     print("PASS M4.1: bt_uart_send_locked return value is strictly checked with error handling.")
 
-    # Check 2: annibale_bt_uart_set_baud return value is verified
-    assert "!annibale_bt_uart_set_baud(req_baud)" in block, (
-        "annibale_bt_uart_set_baud return value check missing in 0xFC48 handling"
+    # Check 2: redwood_bt_uart_set_baud return value is verified
+    assert "!redwood_bt_uart_set_baud(req_baud)" in block, (
+        "redwood_bt_uart_set_baud return value check missing in 0xFC48 handling"
     )
-    print("PASS M4.2: annibale_bt_uart_set_baud return value is checked with rollback on failure.")
+    print("PASS M4.2: redwood_bt_uart_set_baud return value is checked with rollback on failure.")
 
     # Check 3: Verified that chip ACK is awaited (up to 200 ms) rather than blindly synthesizing Command Complete
     assert "for (int t = 0; t < 200; t++)" in block
@@ -56,15 +56,15 @@ def test_m4_bt_baud_rate_transition():
     print("PASS M4.3: WCN7850 chip Command Complete ACK is explicitly waited for and validated.")
 
     # Check 4: Fallback / recovery logic is present
-    has_fallback = ("rollback" in block.lower() and "annibale_bt_uart_set_baud(old_baud" in block)
+    has_fallback = ("rollback" in block.lower() and "redwood_bt_uart_set_baud(old_baud" in block)
     assert has_fallback, "Baud rate rollback logic missing"
     print("PASS M4.4: Rollback logic safely reverts host UART baud rate upon failure.")
 
 
 def test_m4_bt_isr_concurrency_and_locks():
-    """Verify annibale_bt_uart_isr() locking, deadlock vulnerability, and level-IRQ storm risks."""
-    bt_ios_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/annibale_bt_ios.c")
-    bt_uart_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/annibale_bt_uart.c")
+    """Verify redwood_bt_uart_isr() locking, deadlock vulnerability, and level-IRQ storm risks."""
+    bt_ios_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/redwood_bt_ios.c")
+    bt_uart_c = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev/redwood_bt_uart.c")
     gic_v3_c = os.path.join(KERNEL_ROOT, "xnu/files/osfmk/arm64/gic_v3_irq.c")
 
     with open(bt_ios_c, "r", encoding="utf-8") as f:
@@ -75,7 +75,7 @@ def test_m4_bt_isr_concurrency_and_locks():
         gic_src = f.read()
 
     # Check 1: Interrupt attachment mode
-    attach_match = re.search(r"gic_v3_spi_attach\(\s*SE14_GIC_INTID\s*,\s*(false|true)\s*,\s*annibale_bt_uart_isr", uart_src)
+    attach_match = re.search(r"gic_v3_spi_attach\(\s*SE14_GIC_INTID\s*,\s*(false|true)\s*,\s*redwood_bt_uart_isr", uart_src)
     assert attach_match, "gic_v3_spi_attach for SE14 UART not found"
     edge_mode = attach_match.group(1) == "true"
     assert not edge_mode, "SE14 UART attached as edge-triggered, expected level-triggered (false)"
@@ -94,16 +94,16 @@ def test_m4_bt_isr_concurrency_and_locks():
     print("OBSERVATION M4.3: bt_ring_lock is a sleeping mutex (lck_mtx_t).")
 
     # Check 4: ISR does NOT acquire sleeping mutex; masks SPI, clears hardware IRQ, wakes thread
-    isr_start = ios_src.find("void\nannibale_bt_uart_isr(")
+    isr_start = ios_src.find("void\nredwood_bt_uart_isr(")
     assert isr_start != -1
     isr_end = ios_src.find("bt_pump_thread", isr_start)
     isr_body = ios_src[isr_start:isr_end]
 
     assert "lck_mtx_lock" not in isr_body, "lck_mtx_lock must not be called in ISR"
     assert "gic_v3_spi_mask(intid);" in isr_body, "gic_v3_spi_mask missing from ISR"
-    assert "annibale_bt_uart_irq_clear();" in isr_body, "annibale_bt_uart_irq_clear missing from ISR"
+    assert "redwood_bt_uart_irq_clear();" in isr_body, "redwood_bt_uart_irq_clear missing from ISR"
     assert "thread_wakeup((event_t)&bt_irq_event);" in isr_body, "thread_wakeup missing from ISR"
-    print("PASS M4.5: annibale_bt_uart_isr() is lock-free: masks SPI, clears IRQ, and wakes up pump thread safely.")
+    print("PASS M4.5: redwood_bt_uart_isr() is lock-free: masks SPI, clears IRQ, and wakes up pump thread safely.")
 
     # Check 5: Worker thread acquires bt_ring_lock in thread context
     thread_holders = ["bt_pump_thread", "bt_dev_read", "bt_uart_send_locked"]
@@ -114,11 +114,11 @@ def test_m4_bt_isr_concurrency_and_locks():
         assert "lck_mtx_lock(bt_ring_lock);" in fn_body, f"{th} does not acquire bt_ring_lock"
     print(f"PASS M4.6: ISR is decoupled from sleeping mutex; worker thread {thread_holders} safely acquires bt_ring_lock without deadlocks.")
 
-    # Check 6: Level interrupt clearing in annibale_bt_uart_poll() and annibale_bt_uart_irq_clear()
-    poll_body = uart_src[uart_src.find("annibale_bt_uart_poll(void)"):uart_src.find("annibale_bt_uart_rx(")]
-    assert "annibale_bt_uart_irq_clear" in uart_src, "annibale_bt_uart_irq_clear missing"
-    assert "annibale_bt_uart_irq_clear();" in poll_body, "annibale_bt_uart_poll must call annibale_bt_uart_irq_clear"
-    print("PASS M4.7: annibale_bt_uart_poll() and annibale_bt_uart_irq_clear() clear all pending GENI IRQ bits unconditionally.")
+    # Check 6: Level interrupt clearing in redwood_bt_uart_poll() and redwood_bt_uart_irq_clear()
+    poll_body = uart_src[uart_src.find("redwood_bt_uart_poll(void)"):uart_src.find("redwood_bt_uart_rx(")]
+    assert "redwood_bt_uart_irq_clear" in uart_src, "redwood_bt_uart_irq_clear missing"
+    assert "redwood_bt_uart_irq_clear();" in poll_body, "redwood_bt_uart_poll must call redwood_bt_uart_irq_clear"
+    print("PASS M4.7: redwood_bt_uart_poll() and redwood_bt_uart_irq_clear() clear all pending GENI IRQ bits unconditionally.")
 
 
 # ==============================================================================

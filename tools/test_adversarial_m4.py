@@ -3,9 +3,9 @@
 
 Designed by Empirical Challenger (critic/specialist) to stress-test:
 1. Bluetooth UART ISR Bottom-Half Concurrency & Lock Safety:
-   - Invariant: Zero sleeping locks (lck_mtx_lock) in annibale_bt_uart_isr.
+   - Invariant: Zero sleeping locks (lck_mtx_lock) in redwood_bt_uart_isr.
    - Invariant: gic_v3_spi_mask() invoked before irq clear and thread wakeup.
-   - Invariant: annibale_bt_uart_irq_clear() clears both S and M IRQ registers.
+   - Invariant: redwood_bt_uart_irq_clear() clears both S and M IRQ registers.
    - Invariant: INTID alignment between attach (SE14_GIC_INTID = 493) and unmask (32 + 0x1cd = 493).
    - Simulation: High-rate concurrent interrupt arrivals with simulated worker thread processing.
 
@@ -13,7 +13,7 @@ Designed by Empirical Challenger (critic/specialist) to stress-test:
    - Invariant: Transmission failure drops transaction and returns error HCI event 0x12.
    - Invariant: Chip ACK timeout loop bounds (200 ms) and rejection on failure (0x1f).
    - Invariant: 10 ms delay between ACK and baud switch.
-   - Invariant: annibale_bt_uart_set_baud() failure triggers rollback to previous baud.
+   - Invariant: redwood_bt_uart_set_baud() failure triggers rollback to previous baud.
    - Simulation: Ring buffer packet fragmentation and wrap-around during ACK parsing.
    - Clock Math: RCG divider calculations for 3,000,000 baud and 115,200 baud.
 
@@ -41,9 +41,9 @@ SRC_DEV = os.path.join(KERNEL_ROOT, "xnu/files/bsd/dev")
 
 def test_bt_isr_bottom_half():
     print("[TEST 1] Stress-Testing Bluetooth UART ISR Bottom-Half Concurrency Model...")
-    bt_ios_c = os.path.join(SRC_DEV, "annibale_bt_ios.c")
-    bt_uart_c = os.path.join(SRC_DEV, "annibale_bt_uart.c")
-    bt_priv_h = os.path.join(SRC_DEV, "annibale_bt_private.h")
+    bt_ios_c = os.path.join(SRC_DEV, "redwood_bt_ios.c")
+    bt_uart_c = os.path.join(SRC_DEV, "redwood_bt_uart.c")
+    bt_priv_h = os.path.join(SRC_DEV, "redwood_bt_private.h")
 
     with open(bt_ios_c, "r", encoding="utf-8") as f:
         ios_src = f.read()
@@ -53,12 +53,12 @@ def test_bt_isr_bottom_half():
         priv_src = f.read()
 
     # 1.1 Export declaration
-    assert "void annibale_bt_uart_irq_clear(void);" in priv_src, \
-        "Missing declaration of annibale_bt_uart_irq_clear in header"
+    assert "void redwood_bt_uart_irq_clear(void);" in priv_src, \
+        "Missing declaration of redwood_bt_uart_irq_clear in header"
 
-    # 1.2 Locate annibale_bt_uart_isr body
-    isr_start = ios_src.find("void\nannibale_bt_uart_isr(")
-    assert isr_start != -1, "annibale_bt_uart_isr not found"
+    # 1.2 Locate redwood_bt_uart_isr body
+    isr_start = ios_src.find("void\nredwood_bt_uart_isr(")
+    assert isr_start != -1, "redwood_bt_uart_isr not found"
     isr_end = ios_src.find("}", isr_start)
     isr_body = ios_src[isr_start:isr_end]
 
@@ -69,27 +69,27 @@ def test_bt_isr_bottom_half():
         "assert_wait", "thread_block", "kalloc"
     ]
     for term in prohibited_in_isr:
-        assert term not in isr_body, f"VIOLATION: '{term}' called inside annibale_bt_uart_isr!"
+        assert term not in isr_body, f"VIOLATION: '{term}' called inside redwood_bt_uart_isr!"
 
     # Verify order of operations in ISR:
     # 1. gic_v3_spi_mask
-    # 2. annibale_bt_uart_irq_clear
+    # 2. redwood_bt_uart_irq_clear
     # 3. os_atomic_inc & thread_wakeup
     pos_mask = isr_body.find("gic_v3_spi_mask")
-    pos_clear = isr_body.find("annibale_bt_uart_irq_clear")
+    pos_clear = isr_body.find("redwood_bt_uart_irq_clear")
     pos_atomic = isr_body.find("os_atomic_inc")
     pos_wakeup = isr_body.find("thread_wakeup")
 
     assert pos_mask != -1, "gic_v3_spi_mask missing in ISR"
-    assert pos_clear != -1, "annibale_bt_uart_irq_clear missing in ISR"
+    assert pos_clear != -1, "redwood_bt_uart_irq_clear missing in ISR"
     assert pos_atomic != -1, "os_atomic_inc missing in ISR"
     assert pos_wakeup != -1, "thread_wakeup missing in ISR"
     assert pos_mask < pos_clear < pos_wakeup, "Incorrect operation order in ISR"
 
-    # 1.3 Verify annibale_bt_uart_irq_clear clears both S and M IRQ registers
-    irq_clear_start = uart_src.find("annibale_bt_uart_irq_clear(void)")
-    assert irq_clear_start != -1, "annibale_bt_uart_irq_clear not found"
-    irq_clear_end = uart_src.find("annibale_bt_uart_poll", irq_clear_start)
+    # 1.3 Verify redwood_bt_uart_irq_clear clears both S and M IRQ registers
+    irq_clear_start = uart_src.find("redwood_bt_uart_irq_clear(void)")
+    assert irq_clear_start != -1, "redwood_bt_uart_irq_clear not found"
+    irq_clear_end = uart_src.find("redwood_bt_uart_poll", irq_clear_start)
     irq_clear_body = uart_src[irq_clear_start:irq_clear_end]
 
     assert "SE_GENI_S_IRQ_STATUS" in irq_clear_body
@@ -97,7 +97,7 @@ def test_bt_isr_bottom_half():
     assert "SE_GENI_S_IRQ_CLEAR" in irq_clear_body
     assert "SE_GENI_M_IRQ_CLEAR" in irq_clear_body
     assert "UART_START_READ << OPCODE_SHIFT" in irq_clear_body, \
-        "annibale_bt_uart_irq_clear must restart read command on CMD_DONE"
+        "redwood_bt_uart_irq_clear must restart read command on CMD_DONE"
 
     # 1.4 Verify INTID alignment
     # SE14_GIC_SPI_ID = 0x1cd = 461
@@ -155,8 +155,8 @@ def test_bt_isr_bottom_half():
 
 def test_bt_vendor_0xfc48():
     print("[TEST 2] Stress-Testing 0xFC48 Vendor Command & Baud Rate Rollback...")
-    bt_ios_c = os.path.join(SRC_DEV, "annibale_bt_ios.c")
-    bt_uart_c = os.path.join(SRC_DEV, "annibale_bt_uart.c")
+    bt_ios_c = os.path.join(SRC_DEV, "redwood_bt_ios.c")
+    bt_uart_c = os.path.join(SRC_DEV, "redwood_bt_uart.c")
 
     with open(bt_ios_c, "r", encoding="utf-8") as f:
         ios_src = f.read()
@@ -182,9 +182,9 @@ def test_bt_vendor_0xfc48():
     # 2.3 Delay 10 ms
     assert "delay_for_interval(10, NSEC_PER_MSEC);" in fc48_code
 
-    # 2.4 annibale_bt_uart_set_baud call & rollback check
-    assert "if (!annibale_bt_uart_set_baud(req_baud))" in fc48_code
-    assert "annibale_bt_uart_set_baud(old_baud ? old_baud : 115200u)" in fc48_code
+    # 2.4 redwood_bt_uart_set_baud call & rollback check
+    assert "if (!redwood_bt_uart_set_baud(req_baud))" in fc48_code
+    assert "redwood_bt_uart_set_baud(old_baud ? old_baud : 115200u)" in fc48_code
 
     # 2.5 Clock Math Verification for RCG S6
     # 3 Mbaud: GPLL0 even = 300 MHz. M=4, N=25 -> 48 MHz. Oversampling 16 -> 48 MHz / (16 * 1) = 3 Mbaud.
@@ -355,9 +355,9 @@ def test_audio_amp_gpio_and_i2c():
 def test_code_style_and_lines():
     print("[TEST 5] Checking Architecture & Layout Compliance (Line Counts < 1200, No Banned Patterns)...")
     target_files = [
-        os.path.join(SRC_DEV, "annibale_bt_private.h"),
-        os.path.join(SRC_DEV, "annibale_bt_uart.c"),
-        os.path.join(SRC_DEV, "annibale_bt_ios.c"),
+        os.path.join(SRC_DEV, "redwood_bt_private.h"),
+        os.path.join(SRC_DEV, "redwood_bt_uart.c"),
+        os.path.join(SRC_DEV, "redwood_bt_ios.c"),
         os.path.join(SRC_DEV, "annibale_audio_reach.c"),
         os.path.join(SRC_DEV, "annibale_audio_amp.c"),
     ]

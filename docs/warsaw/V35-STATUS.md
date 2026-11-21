@@ -83,7 +83,7 @@ psci: cpu 2 ends the system: the return to the boot loader is the boot processor
 | 驱动 | 文件 | 启动参数 |
 |---|---|---|
 | Wi-Fi（ath12k 移植） | `bsd/dev/redwood_wifi.c` | `wifi=1`（或 `wifi_step=N`） |
-| 蓝牙 | `bsd/dev/annibale_bt_hci.c` / `mhi_pcie.c` | `pcie=N` + `bt=4` |
+| 蓝牙 | `bsd/dev/redwood_bt_hci.c` / `mhi_pcie.c` | `pcie=N` + `bt=4` |
 
 - v35 的 cmdline **一个都没带**，所以两家都没上电。
 - Wi-Fi 还缺固件：驱动要 `fw/wpss.mdt` + `wpss.b02..09`（TrustZone 那种 4 KB MDT 头 + 分段文件）。

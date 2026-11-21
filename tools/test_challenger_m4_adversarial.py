@@ -3,8 +3,8 @@
 
 Author: challenger_r2_it3_1
 Target:
-  - hackios-xnu-kernel/xnu/files/bsd/dev/annibale_bt_ios.c
-  - hackios-xnu-kernel/xnu/files/bsd/dev/annibale_bt_uart.c
+  - hackios-xnu-kernel/xnu/files/bsd/dev/redwood_bt_ios.c
+  - hackios-xnu-kernel/xnu/files/bsd/dev/redwood_bt_uart.c
   - hackios-xnu-kernel/xnu/files/bsd/dev/annibale_audio_reach.c
   - hackios-xnu-kernel/xnu/files/bsd/dev/annibale_audio_amp.c
 """
@@ -32,9 +32,9 @@ def assert_test(cond, msg):
 # ==============================================================================
 def challenge_bt_uart_isr_and_bottom_half():
     print("\n--- Challenge 1: BT UART ISR Bottom-Half Concurrency & Object Code Audit ---")
-    bt_ios_c = os.path.join(SRC_DEV, "annibale_bt_ios.c")
-    bt_uart_c = os.path.join(SRC_DEV, "annibale_bt_uart.c")
-    obj_bt_ios = os.path.join(OBJ_DEV, "annibale_bt_ios.o")
+    bt_ios_c = os.path.join(SRC_DEV, "redwood_bt_ios.c")
+    bt_uart_c = os.path.join(SRC_DEV, "redwood_bt_uart.c")
+    obj_bt_ios = os.path.join(OBJ_DEV, "redwood_bt_ios.o")
 
     with open(bt_ios_c, "r", encoding="utf-8") as f:
         ios_src = f.read()
@@ -45,9 +45,9 @@ def challenge_bt_uart_isr_and_bottom_half():
     assert_test(os.path.exists(obj_bt_ios), f"Compiled object {obj_bt_ios} exists")
     otool_out = subprocess.check_output(["otool", "-tvV", obj_bt_ios], text=True)
 
-    # Find _annibale_bt_uart_isr in disassembly
-    isr_match = re.search(r"_annibale_bt_uart_isr:(.*?)(?:_[a-zA-Z0-9_]+:|\Z)", otool_out, re.DOTALL)
-    assert_test(isr_match is not None, "_annibale_bt_uart_isr found in object disassembly")
+    # Find _redwood_bt_uart_isr in disassembly
+    isr_match = re.search(r"_redwood_bt_uart_isr:(.*?)(?:_[a-zA-Z0-9_]+:|\Z)", otool_out, re.DOTALL)
+    assert_test(isr_match is not None, "_redwood_bt_uart_isr found in object disassembly")
     isr_disasm = isr_match.group(1)
 
     # Must NOT call lck_mtx_lock or any blocking function
@@ -62,14 +62,14 @@ def challenge_bt_uart_isr_and_bottom_half():
 
     # 1.2 Verify GIC SPI INTID consistency between UART driver and unmask in pump thread
     spi_match = re.search(r"#define\s+SE14_GIC_SPI_ID\s+(0x[0-9a-fA-F]+u?|\d+u?)", uart_src)
-    assert_test(spi_match is not None, "SE14_GIC_SPI_ID definition found in annibale_bt_uart.c")
+    assert_test(spi_match is not None, "SE14_GIC_SPI_ID definition found in redwood_bt_uart.c")
     raw_spi = spi_match.group(1).rstrip("u")
     spi_val = int(raw_spi, 16) if raw_spi.startswith("0x") else int(raw_spi)
     assert_test("#define SE14_GIC_INTID  (32u + SE14_GIC_SPI_ID)" in uart_src,
-                "SE14_GIC_INTID definition (32u + SE14_GIC_SPI_ID) found in annibale_bt_uart.c")
+                "SE14_GIC_INTID definition (32u + SE14_GIC_SPI_ID) found in redwood_bt_uart.c")
     expected_intid = 32 + spi_val
 
-    # In annibale_bt_ios.c: gic_v3_spi_unmask(32u + 0x1cdu)
+    # In redwood_bt_ios.c: gic_v3_spi_unmask(32u + 0x1cdu)
     unmask_match = re.search(r"\bgic_v3_spi_unmask\(\s*(\d+u\s*\+\s*0x[0-9a-fA-F]+u?)\s*\);", ios_src)
     assert_test(unmask_match is not None, "gic_v3_spi_unmask call found in bt_pump_thread")
     unmask_expr = unmask_match.group(1)
@@ -150,7 +150,7 @@ def challenge_bt_uart_isr_and_bottom_half():
 # ==============================================================================
 def challenge_bt_fc48_transition_and_rollback():
     print("\n--- Challenge 2: 0xFC48 Chip ACK Polling, Delay, and Rollback ---")
-    bt_ios_c = os.path.join(SRC_DEV, "annibale_bt_ios.c")
+    bt_ios_c = os.path.join(SRC_DEV, "redwood_bt_ios.c")
     with open(bt_ios_c, "r", encoding="utf-8") as f:
         src = f.read()
 
@@ -191,9 +191,9 @@ def challenge_bt_fc48_transition_and_rollback():
     assert_test("10" in delays, "Includes 10 ms physical line stabilization delay")
 
     # 2.6 Verify rollback on host UART switch failure
-    assert_test("if (!annibale_bt_uart_set_baud(req_baud))" in block,
-                "Checks annibale_bt_uart_set_baud failure")
-    assert_test("(void)annibale_bt_uart_set_baud(old_baud ? old_baud : 115200u);" in block,
+    assert_test("if (!redwood_bt_uart_set_baud(req_baud))" in block,
+                "Checks redwood_bt_uart_set_baud failure")
+    assert_test("(void)redwood_bt_uart_set_baud(old_baud ? old_baud : 115200u);" in block,
                 "Rolls back host baud rate to previous rate on failure")
 
 
@@ -296,8 +296,8 @@ def challenge_compilation_and_file_limits():
 
     # Check line limits (must be <= 1200 lines)
     files_to_check = [
-        "annibale_bt_ios.c",
-        "annibale_bt_uart.c",
+        "redwood_bt_ios.c",
+        "redwood_bt_uart.c",
         "annibale_audio_reach.c",
         "annibale_audio_amp.c"
     ]

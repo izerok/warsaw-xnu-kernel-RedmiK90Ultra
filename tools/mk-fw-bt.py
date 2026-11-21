@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mk-fw-bt.py: the Bluetooth firmware the phone's own bluetooth partition carries, for the kernel's bring-up over SE14
-(boot-arg bt=3, xnu/files/bsd/dev/annibale_bt_hci.c). Nothing of the firmware is in the repository.
+(boot-arg bt=3, xnu/files/bsd/dev/redwood_bt_hci.c). Nothing of the firmware is in the repository.
 
 The partition (bluetooth_a; Android mounts it as /vendor/bt_firmware) is FAT16 with everything under image/: the
 files of several Qualcomm chips (brh*, gng* and the UWB parts) and the WCN7850's, which Linux's btqca.c names
