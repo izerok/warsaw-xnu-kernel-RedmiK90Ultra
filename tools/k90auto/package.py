@@ -250,7 +250,7 @@ INJECT = (
     (" iconservicesagent" if os.environ.get("ICON_METAL", "1") == "1" else "") +
     (" MercuryPosterExtension" if POSTER_METAL else "") + "\n" +
     "/redwood/lib/libredwood-sb26.dylib SpringBoard PosterBoard MercuryPosterExtension WidgetRenderer_Default SharingUIService Preferences lsd wifid\n"
-    "/redwood/lib/libredwood-media.dylib cameracaptured mediaserverd\n"
+    "/redwood/lib/libredwood-media.dylib cameracaptured mediaserverd deferredmediad\n"
     "/redwood/lib/libredwood-vt.dylib videocodecd mediaserverd com.apple.WebKit.GPU video_decode_test video_player_test\n"
     "/redwood/lib/libredwood-app.dylib Calculator MobileNotes Reminders MobileCal Preferences MobileSMS systemstatusd Weather weatherd Maps geod MobileSafari com.apple.WebKit.Networking com.apple.WebKit.WebContent nsurlsessiond chronod\n" +
     ("/redwood/lib/libredwood-xpcwatch.dylib " + " ".join(XPCWATCH_PROCESSES) + "\n"
