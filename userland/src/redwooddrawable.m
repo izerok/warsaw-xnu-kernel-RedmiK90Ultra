@@ -277,6 +277,7 @@ static size_t (*iosurf_get_width_of_plane)(void *, size_t);
 static size_t (*iosurf_get_height_of_plane)(void *, size_t);
 static size_t (*iosurf_get_bytes_per_row_of_plane)(void *, size_t);
 static size_t (*iosurf_get_element_offset_of_plane)(void *, size_t);
+static void (*iosurf_get_extended_pixels_of_plane)(void *, size_t, size_t *, size_t *, size_t *, size_t *);
 
 static void
 rwd_lookup_iosurface_symbols(void)
@@ -297,6 +298,7 @@ rwd_lookup_iosurface_symbols(void)
 		*(void **)&iosurf_get_height_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeightOfPlane");
 		*(void **)&iosurf_get_bytes_per_row_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
 		*(void **)&iosurf_get_element_offset_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetElementOffsetOfPlane");
+		*(void **)&iosurf_get_extended_pixels_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetExtendedPixelsOfPlane");
 		looked = 1;
 		if (iosurf_get_id == NULL) {
 			printf("redwooddrawable: this process has no IOSurfaceGetID, so a "
@@ -428,6 +430,13 @@ static const struct rwd_format rwd_formats[] = {
 	{ 553, 'BGRA', 4, 0, "a ten-bit XR format" },
 	{ 554, 'BGRA', 4, 0, "a ten-bit XR format" },
 	{ 555, 'BGRA', 4, 0, "a ten-bit XR format" },
+	/* 576/578 are R10Unorm_X6/RG10Unorm_X12, what LumaChromaImage binds the planes of
+	 * 'x420'/'xf20' as (upstream 86032a0): single-plane 10-bit formats, not two-plane
+	 * YCbCr, so they are served here rather than refused by the 500-629 branch below.
+	 * The FourCC is the surface's own ('xf20'); the pixel size is R16_UNORM/R16G16_UNORM
+	 * (2/4 bytes). The formats-table part (air_metal_formats.inc) rides the pin lift. */
+	{ 576, 'xf20', 2, 0, "MTLPixelFormatR10Unorm_X6" },
+	{ 578, 'xf20', 4, 0, "MTLPixelFormatRG10Unorm_X12" },
 };
 
 /*
@@ -677,9 +686,28 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	 * the drawable path found no matching surface and reported "no surface has been set
 	 * for this drawable". A smaller surface is still refused: a drawable must never be
 	 * asked to hand out more pixels than the surface holds. */
-	if (!is_ycbcr_biplanar && (surface.width < want->width || surface.height < want->height)) {
-		rwd_say(why, why_size, "surface %u is %ux%u and the descriptor asks for %ux%u",
-		    id, surface.width, surface.height, want->width, want->height);
+	/*
+	 * FigMetalContext rounds a plane up to its alignment and asks for the texture when the
+	 * surface's extended pixels on the right and at the bottom hold the difference: a
+	 * 2352x1764 plane with 12 extended rows is bound as 2352x1776 (upstream 86032a0). The
+	 * same rule here, read from the IOSurface for this plane: the kernel's description
+	 * carries the surface's own size only (struct rwd_surface has no extended-pixels
+	 * field), and only the right and bottom edges extend it. Without the symbol (an older
+	 * IOSurface) there is no extension to read, and the strict sizes stand.
+	 */
+	size_t most_w = surface.width, most_h = surface.height;
+
+	if (!is_ycbcr_biplanar && (want->width > surface.width || want->height > surface.height) &&
+	    iosurface != NULL && iosurf_get_extended_pixels_of_plane != NULL) {
+		size_t left = 0, right = 0, top = 0, bottom = 0;
+
+		iosurf_get_extended_pixels_of_plane(iosurface, plane, &left, &right, &top, &bottom);
+		most_w = surface.width + right;
+		most_h = surface.height + bottom;
+	}
+	if (!is_ycbcr_biplanar && (want->width > most_w || want->height > most_h)) {
+		rwd_say(why, why_size, "surface %u is %ux%u (extended to %zux%zu) and the descriptor asks for %ux%u",
+		    id, surface.width, surface.height, most_w, most_h, want->width, want->height);
 		return NULL;
 	}
 	if (rwd_canonical_fourcc(surface.pixelFormat, fourcc) != fourcc) {

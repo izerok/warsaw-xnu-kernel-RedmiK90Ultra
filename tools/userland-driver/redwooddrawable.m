@@ -294,6 +294,45 @@ rwd_surface_id(void *iosurface)
 	return get_id != NULL ? get_id(iosurface) : 0;
 }
 
+/*
+ * The extended pixels of one plane of a surface: how far past the plane's own width and
+ * height the storage runs, on the right and at the bottom (IOSurfaceGetExtendedPixelsOfPlane).
+ * Looked up rather than linked, like IOSurfaceGetID above: a hard dependency on
+ * IOSurface.framework would fail this driver's load rather than this one call. Without the
+ * symbol there is no extension to read, and both out values stay 0.
+ */
+static void
+rwd_extended_pixels(void *iosurface, size_t plane, size_t *right, size_t *bottom)
+{
+	static void (*extended)(void *, size_t, size_t *, size_t *, size_t *, size_t *);
+	static int looked;
+
+	if (right != NULL) {
+		*right = 0;
+	}
+	if (bottom != NULL) {
+		*bottom = 0;
+	}
+	if (iosurface == NULL) {
+		return;
+	}
+	if (!looked) {
+		*(void **)&extended = dlsym(RTLD_DEFAULT, "IOSurfaceGetExtendedPixelsOfPlane");
+		looked = 1;
+	}
+	if (extended != NULL) {
+		size_t left = 0, top = 0, r = 0, b = 0;
+
+		extended(iosurface, plane, &left, &r, &top, &b);
+		if (right != NULL) {
+			*right = r;
+		}
+		if (bottom != NULL) {
+			*bottom = b;
+		}
+	}
+}
+
 int
 rwd_surface_fits_adreno(const struct rwd_surface *surface, unsigned bytes_per_pixel,
 			char *why, size_t why_size)
@@ -309,7 +348,16 @@ rwd_surface_fits_adreno(const struct rwd_surface *surface, unsigned bytes_per_pi
 		rwd_say(why, why_size, "rwd_surface_fits_adreno needs a surface and a pixel size");
 		return -1;
 	}
-	if (surface->planes > 1) {
+	/*
+	 * A drawable's texture is one plane. The surface's own geometry is that plane's only
+	 * when the texture is plane 0 -- and this tree imports plane 0 only (the gate at the
+	 * top of rwd_texture_for_surface) -- so a multi-plane surface is refused only when a
+	 * row of the wanted format needs more than the surface's row holds: the same rule the
+	 * 16.5 tree's rwd_surface_fits_adreno already has. That is what lets a 576 (2 bytes
+	 * a pixel) plane-0 import of a 2-plane 'xf20' surface through; a 578 (4 bytes) still
+	 * does not get in, which is right, because plane 1's own row length is not read here.
+	 */
+	if (surface->planes > 1 && bytes_per_pixel > 2) {
 		rwd_say(why, why_size, "surface %u has %u planes; a drawable's texture is one "
 		    "plane and this driver imports no others", surface->surface, surface->planes);
 		return -1;
@@ -396,6 +444,15 @@ static const struct rwd_format rwd_formats[] = {
 	{ 553, 'w40a', 4, 1, "a ten-bit XR format" },
 	{ 554, 'w30r', 4, 1, "a ten-bit XR format" },
 	{ 555, 'w30r', 4, 1, "a ten-bit XR format" },
+	/* 576/578 are R10Unorm_X6/RG10Unorm_X12, what LumaChromaImage binds the planes of
+	 * 'x420'/'xf20' as (upstream 86032a0): single-plane 10-bit formats, not two-plane
+	 * YCbCr, so they are served here rather than refused by the 500-629 branch below.
+	 * The FourCC is the surface's own ('xf20'); the pixel size is R16_UNORM/R16G16_UNORM
+	 * (2/4 bytes). The formats-table part (air_metal_formats.inc) rides the pin lift.
+	 * 578 still cannot be imported on this tree: the plane-0-only gate below refuses
+	 * plane 1, and per-plane geometry is not read here. */
+	{ 576, 'xf20', 2, 0, "MTLPixelFormatR10Unorm_X6" },
+	{ 578, 'xf20', 4, 0, "MTLPixelFormatRG10Unorm_X12" },
 };
 
 int
@@ -596,10 +653,24 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 		return NULL;
 	}
 	/* A texture may cover the top-left part of a larger surface, rows at the surface's own
-	 * pitch: iconservicesagent asks for 130x62 of a 192x64 surface and 64x70 of a 64x128 one. */
-	if (surface.width < want->width || surface.height < want->height) {
-		rwd_say(why, why_size, "surface %u is %ux%u, smaller than the %ux%u the descriptor "
-		    "asks for", id, surface.width, surface.height, want->width, want->height);
+	 * pitch: iconservicesagent asks for 130x62 of a 192x64 surface and 64x70 of a 64x128 one.
+	 * And a texture may cover the surface's extended pixels too: FigMetalContext rounds a
+	 * plane up to its alignment and asks for the texture when the extended pixels on the
+	 * right and at the bottom hold the difference -- a 2352x1764 plane with 12 extended
+	 * rows is bound as 2352x1776 (upstream 86032a0). Only the right and bottom edges
+	 * extend it. */
+	size_t most_w = surface.width, most_h = surface.height;
+
+	if (want->width > surface.width || want->height > surface.height) {
+		size_t right = 0, bottom = 0;
+
+		rwd_extended_pixels(iosurface, plane, &right, &bottom);
+		most_w = surface.width + right;
+		most_h = surface.height + bottom;
+	}
+	if (want->width > most_w || want->height > most_h) {
+		rwd_say(why, why_size, "surface %u is %ux%u (extended to %zux%zu), smaller than the %ux%u the descriptor "
+		    "asks for", id, surface.width, surface.height, most_w, most_h, want->width, want->height);
 		return NULL;
 	}
 	if (surface.pixelFormat != fourcc) {
