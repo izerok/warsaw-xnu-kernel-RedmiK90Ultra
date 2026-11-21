@@ -763,6 +763,7 @@ rw_surface_through_copy(RedwoodMetalDevice *device, MTLTextureDescriptor *d, voi
 		[(id)surfTex performSelector:@selector(redwoodApplyDescriptorSwizzle:) withObject:d];
 	}
 	return surfTex;
+}
 
 @end
 

@@ -1806,6 +1806,7 @@ struct gem_close { uint32_t handle, pad; };
 		[(id)tex performSelector:@selector(redwoodApplyDescriptorSwizzle:) withObject:descriptor];
 	}
 	return tex;
+}
 
 /* The sampler's own base class exists and owes its protocol nothing, so this is the cheapest
  * object in the driver: the state goes to the compiler library, which maps it the same way it
