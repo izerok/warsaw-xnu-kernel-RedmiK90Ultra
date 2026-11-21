@@ -14,7 +14,7 @@ ATH=${ATH11K:-$ROOT/xnu-deps/build/ath11k/src/ath11k}
 B=$ROOT/xnu-deps/build/qmi-test
 rm -rf "$B"
 mkdir -p "$B/inc/sys"
-ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$K/bsd/sys/redwood_nas.h" "$K/bsd/sys/redwood_wds.h" "$B/inc/sys/"
+ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$K/bsd/sys/redwood_nas.h" "$K/bsd/sys/redwood_wds.h" "$K/bsd/sys/redwood_cell.h" "$B/inc/sys/"
 FLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -pthread"
 if [ -f "$ATH/qmi.c" ]; then
 	"$HERE/extract.py" "$ATH" > "$B/tables.inc"
@@ -31,3 +31,6 @@ ${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-nas" "$HERE/test_nas.c" "
 # Same for the WDS session test (its fake transport drives DPM/WDA/WDS by hand).
 ${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-wds" "$HERE/test_wds.c" "$K/bsd/dev/redwood_wds.c"
 "$B/test-wds"
+# Same for the cell test (fake data plane; the ARP/DHCP engine is pure frame code).
+${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-cell" "$HERE/test_cell.c" "$K/bsd/dev/redwood_cell.c"
+"$B/test-cell"
