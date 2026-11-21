@@ -46,6 +46,7 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
 
 extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
 extern "C" uint32_t redwood_frames_shown;        /* (bsd/sys/redwood_input.h) */
+extern "C" bool redwood_gpu_ready(void);       /* (bsd/sys/redwood_input.h): false once GPU submissions are closed */
 
 /* IOConnectCallMethod selectors of the framebuffer user client (iOS 16.5) */
 enum {
@@ -295,6 +296,7 @@ public:
 	uint64_t        fFirstFrame, fRecFirst; /* when the first frame was shown, and the first recorded */
 	bool            fRecDone;
 	bool            fRecWrapped;            /* (rec_ring) the memory has been full once: frames go over the oldest */
+	bool            fGPUStopSaid;           /* show(): swaps stopped going on the panel once the GPU stopped */
 	/* fb_filter=2 (MiniFramebufferPacing.inc): drawing the frame again filtered; a layer of this frame drawn unfiltered */
 	bool            fSettling, fDrewNearest;
 	uint32_t        fStatSettled;           /* frames drawn again filtered, and how long that took together */
@@ -776,11 +778,38 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	MiniIOSurface * recorded = NULL;
 	bool report;
 
+	bool unfinished = false, gpu_up = true;
+
+	/* (MiniIOSurfaceDrawn() answers at once when the GPU has stopped: only a working one is waited for) */
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS)) {
-			IOLog("MiniIOMobileFramebuffer: swap %u: the GPU is not done with surface %u after %u ms; shown as it is\n",
-			    swapWord(swap, SWAP_ID), swapWord(swap, SWAP_SURFACE(layer)), SWAP_GPU_MS);
+			gpu_up = unfinished ? gpu_up : redwood_gpu_ready();
+			unfinished = true;
+			if (gpu_up) {
+				IOLog("MiniIOMobileFramebuffer: swap %u: the GPU is not done with surface %u after %u ms; shown as it is\n",
+				    swapWord(swap, SWAP_ID), swapWord(swap, SWAP_SURFACE(layer)), SWAP_GPU_MS);
+			}
 		}
+	}
+	/*
+	 * Once the kernel has closed GPU submissions after a fault, no surface still waiting for the GPU
+	 * will ever be finished. The window server goes on swapping between two such surfaces, and putting
+	 * them on the panel as they are turned the whole screen bright and dark many times a second. The
+	 * swap is taken and let go without drawing: the panel keeps its last finished frame, as a display
+	 * controller waiting on the GPU's fence would.
+	 */
+	if (unfinished && !gpu_up) {
+		if (!fGPUStopSaid) {
+			fGPUStopSaid = true;
+			IOLog("MiniIOMobileFramebuffer: swap %u and later ones with surfaces the GPU never finished are not shown: "
+			    "the GPU has stopped; the panel keeps its last frame\n", swapWord(swap, SWAP_ID));
+		}
+		IOLockLock(fSwapLock);
+		fSwapFirst = (fSwapFirst + 1) % SWAP_QUEUE;
+		fSwapsWaiting--;
+		IOLockWakeup(fSwapLock, &fSwapsWaiting, true);
+		IOLockUnlock(fSwapLock);
+		return;
 	}
 	fStatWaiting += mach_absolute_time() - began;
 	began = ready = mach_absolute_time();
