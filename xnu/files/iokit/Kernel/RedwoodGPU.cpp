@@ -223,7 +223,7 @@ struct redwood_worked {
 #define GPU_STALL_MS            30000           /* no submission retired for this long with one waited for: the core has stopped */
 #define GPU_ASK_AGAIN_US        200             /* while waiting for the core: how long between two looks at how far it is */
 #define GPU_ASK_LONGEST_US      2000            /* ... and with its completion interrupt (gpu_irq): the longest sleep between two */
-#define GPU_PUSH_AGAIN_MS       4               /* a surface is pushed out of the cache again for a submission this long after the last */
+#define GPU_PUSH_AGAIN_MS       100             /* a surface is pushed out of the cache again for a submission this long after the last */
 
 static IOLock * gGPULock;                       /* around everything that is the GPU's (redwood_gpu_...) */
 static bool gGPUReported;
@@ -317,6 +317,7 @@ MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
  * more ("tl: f KIND US at US"), for telling apart what holds a frame up (tools/frames.py).
  */
 static TUNABLE(uint32_t, gWaitLines, "touch_lat", 0);
+static TUNABLE(uint32_t, gGPUPushAgainMs, "gpu_push_ms", GPU_PUSH_AGAIN_MS);
 
 static void
 slowWait(const char * kind, uint64_t began)

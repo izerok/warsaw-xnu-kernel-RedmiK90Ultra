@@ -5,7 +5,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 	struct msm_gem_submit_bo * bos = NULL;
 	struct msm_gem_submit_cmd * cmds = NULL;
 	uint64_t addresses[GPU_SUBMIT_CMDS];
-	uint32_t words[GPU_SUBMIT_CMDS], count = 0;
+	uint32_t words[GPU_SUBMIT_CMDS], count = 0, pushMs;
 	uint64_t entered = mach_absolute_time(), began, nanos, again, roomed;
 	IOReturn ret = kIOReturnBadArgument;
 	const bool a830 = redwood_platform_is_annibale();
@@ -86,7 +86,8 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 	 * those pages cacheable and inner-shareable and snoops the caches itself (adreno8_bo_attributes).
 	 */
 	began = mach_absolute_time();
-	nanoseconds_to_absolutetime(GPU_PUSH_AGAIN_MS * NSEC_PER_MSEC, &again);
+	pushMs = gGPUPushAgainMs;
+	nanoseconds_to_absolutetime((uint64_t) pushMs * NSEC_PER_MSEC, &again);
 	for (uint32_t i = 0; i < request->nr_bos && !gGPUCoherent; i++) {
 		struct gpu_buffer * b = buffer(bos[i].handle);
 
@@ -96,7 +97,7 @@ RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
 		if (b->surface != NULL) {
 			uint32_t seed = b->surface->shared()->seed;
 
-			if (seed == b->seed && !b->seen && began - b->pushed < again) {
+			if (seed == b->seed && !b->seen && (pushMs == 0 || began - b->pushed < again)) {
 				continue;
 			}
 			b->seed = seed;
