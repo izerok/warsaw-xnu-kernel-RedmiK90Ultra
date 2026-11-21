@@ -145,6 +145,32 @@ protocol_declares(const char *name, SEL selector, struct objc_method_description
 	[work release];
 }
 
+- (void)copyFromTexture:(id)source toTexture:(id)destination
+{
+	if (![self acceptSource:source destination:destination resourceClass:[RedwoodMetalTexture class]])
+		return;
+	id<MTLTexture> from = source, to = destination;
+	MTLTextureType fromType = [from textureType], toType = [to textureType];
+	NSUInteger fromSlices = [from arrayLength] *
+	    (fromType == MTLTextureTypeCube || fromType == MTLTextureTypeCubeArray ? 6u : 1u);
+	NSUInteger toSlices = [to arrayLength] *
+	    (toType == MTLTextureTypeCube || toType == MTLTextureTypeCubeArray ? 6u : 1u);
+	NSUInteger slices = MIN(fromSlices, toSlices);
+	NSUInteger levels = MIN([from mipmapLevelCount], [to mipmapLevelCount]);
+
+	/* This tree has no sliceCount/levelCount variant (the driver tree does):
+	 * loop the region copy directly, as that variant does. */
+	for (NSUInteger l = 0; l < levels; l++) {
+		MTLSize size = MTLSizeMake(MAX([from width] >> l, 1), MAX([from height] >> l, 1),
+					    MAX([from depth] >> l, 1));
+
+		for (NSUInteger s = 0; s < slices; s++)
+			[self copyFromTexture:source sourceSlice:s sourceLevel:l sourceOrigin:MTLOriginMake(0, 0, 0)
+			     sourceSize:size toTexture:destination destinationSlice:s destinationLevel:l
+			    destinationOrigin:MTLOriginMake(0, 0, 0)];
+	}
+}
+
 - (void)generateMipmapsForTexture:(id)texture
 {
 	if (![texture isKindOfClass:[RedwoodMetalTexture class]] || [texture device] != [self device]) {
