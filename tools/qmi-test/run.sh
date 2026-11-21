@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build and run the tests of the QMI helpers (bsd/dev/redwood_qmi.c of the kernel tree) on this
-# machine, under the address and undefined-behaviour sanitizers.
+# Build and run the tests of the QMI helpers (bsd/dev/redwood_qmi.c and bsd/dev/redwood_nas.c
+# of the kernel tree) on this machine, under the address and undefined-behaviour sanitizers.
 #
 # With ath11k's sources at hand (tools/mk-ath11k.sh fetches them; ATH11K=<directory> to say where
 # else they are) its own message tables are tested too; without, only what needs none of them.
@@ -14,7 +14,7 @@ ATH=${ATH11K:-$ROOT/xnu-deps/build/ath11k/src/ath11k}
 B=$ROOT/xnu-deps/build/qmi-test
 rm -rf "$B"
 mkdir -p "$B/inc/sys"
-ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$B/inc/sys/"
+ln -s "$K/bsd/sys/redwood_qmi.h" "$K/bsd/sys/redwood_qrtr.h" "$K/bsd/sys/redwood_nas.h" "$B/inc/sys/"
 FLAGS="-std=gnu11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all -pthread"
 if [ -f "$ATH/qmi.c" ]; then
 	"$HERE/extract.py" "$ATH" > "$B/tables.inc"
@@ -25,3 +25,6 @@ else
 	${CC:-cc} $FLAGS -DNO_ATH11K -I"$B/inc" -o "$B/test" "$HERE/test_qmi.c" "$HERE/test_encode.c" "$HERE/test_tables.c" "$HERE/test_router.c" "$HERE/test_wcn.c" "$K/bsd/dev/redwood_qmi.c"
 fi
 "$B/test"
+# The NAS test needs no ath11k tables; it does need the shim for <sys/systm.h> (printf, strings).
+${CC:-cc} $FLAGS -I"$B/inc" -I"$HERE/shim" -o "$B/test-nas" "$HERE/test_nas.c" "$K/bsd/dev/redwood_nas.c"
+"$B/test-nas"

@@ -56,6 +56,7 @@ index 60d8aa6148d8..6d157a86c272 100644
 +bsd/dev/redwood_sound.c		standard
 +bsd/dev/redwood_qmi.c		standard
 +bsd/dev/redwood_qrtr.c		standard
++bsd/dev/redwood_nas.c		standard
 +bsd/dev/redwood_wlfw.c		standard
 +bsd/dev/redwood_lx.c		standard
 +bsd/dev/redwood_sta.c		standard
